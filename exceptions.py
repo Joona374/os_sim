@@ -39,6 +39,14 @@ class InvalidCpuRegister(MachineFault):
         self.value = register
 
 
+class StackPointerOutsideRam(MachineFault):
+    def __init__(self, sp: Address, ram_start: Address, ram_end: Address) -> None:
+        super().__init__(f"Stack Pointer: 0x{sp:04X} is outside of RAM 0x{ram_start:04X}-0x{ram_end:04X}.")
+        self.sp = sp
+        self.ram_start = ram_start
+        self.ram_end = ram_end
+
+
 class InvalidByteValue(ValueError):
     """Raised when tryng to insert a byte value larger than expected."""
     def __init__(self, value: Byte) -> None:

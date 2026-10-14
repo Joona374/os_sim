@@ -1,4 +1,5 @@
 from enum import Enum
+from webbrowser import Opera
 
 NUM_REGISTERS = 4
 
@@ -14,6 +15,8 @@ class Opcode(Enum):
     ADD = 0x07
     SUB = 0x08
     LDR = 0x09
+    PUSH = 0x0A
+    POP = 0x0B
 
 
 class Operand(Enum):
@@ -25,14 +28,16 @@ class Operand(Enum):
 # Which operands follow each opcode, in order.
 LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.HALT: [],
-    Opcode.LOAD: [Operand.REG, Operand.IMM8],           # Target Reg, Immediate Value
-    Opcode.STORE: [Operand.REG, Operand.ADDR16],        # Source Reg, Target addr
-    Opcode.JUMP: [Operand.ADDR16],                      # PC to Addr
-    Opcode.CMP: [Operand.REG, Operand.REG],             # REG_A - REG_B, if == 0 set zero_flag
-    Opcode.JZ: [Operand.ADDR16],                        # IF zero_flag jump to Addr
-    Opcode.ADD: [Operand.REG, Operand.REG],             # REG_A += REG_B
-    Opcode.SUB: [Operand.REG, Operand.REG],             # REG_A -= REG_B
-    Opcode.LDR: [Operand.REG, Operand.REG, Operand.REG], # Target Reg, HI_REG, LO_REG
+    Opcode.LOAD: [Operand.REG, Operand.IMM8],  # Target Reg, Immediate Value
+    Opcode.STORE: [Operand.REG, Operand.ADDR16],  # Source Reg, Target addr
+    Opcode.JUMP: [Operand.ADDR16],  # PC to Addr
+    Opcode.CMP: [Operand.REG, Operand.REG],  # REG_A - REG_B, if == 0 set zero_flag
+    Opcode.JZ: [Operand.ADDR16],  # IF zero_flag jump to Addr
+    Opcode.ADD: [Operand.REG, Operand.REG],  # REG_A += REG_B
+    Opcode.SUB: [Operand.REG, Operand.REG],  # REG_A -= REG_B
+    Opcode.LDR: [Operand.REG, Operand.REG, Operand.REG],  # Target Reg, HI_REG, LO_REG
+    Opcode.PUSH: [Operand.REG],  # Source reg
+    Opcode.POP: [Operand.REG],  # Target reg
 }
 
 OPERAND_SIZE: dict[Operand, int] = {
