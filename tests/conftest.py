@@ -1,5 +1,5 @@
 from bus import Bus
-from cpu import CPU
+from cpu import CPU, RAM_END, RAM_START
 from device import RAM, ROM
 
 
@@ -18,18 +18,22 @@ class RecordingDevice:
 
 def build_machine(program: bytes) -> tuple[CPU, RecordingDevice]:
     bus = Bus()
-    bus.register_device(0x0000, 0x0400, ROM(program))
-    bus.register_device(0x0400, 0x0400, RAM())
+    bus.register_device(0x0000, RAM_START, ROM(program))
+    bus.register_device(RAM_START, RAM_END - RAM_START, RAM())
     recording_device = RecordingDevice()
-    bus.register_device(0x0800, 0x0400, recording_device)
+    bus.register_device(RAM_END, RAM_END - RAM_START, recording_device)
     return CPU(bus), recording_device
+
+
+def run_cpu(cpu: CPU, max_steps: int = 1000) -> CPU:
+    for _ in range(max_steps):
+        if cpu.halted:
+            return cpu
+        cpu.step()
+    assert cpu.halted, f"program did not reach HALT within {max_steps} instructions"
+    return cpu
 
 
 def run_program(program: bytes) -> CPU:
     cpu, _ = build_machine(program)
-    for _ in range(1000):
-        if cpu.halted:
-            return cpu
-        cpu.step()
-    assert cpu.halted, "program did not reach HALT within 1000 instructions"
-    return cpu
+    return run_cpu(cpu)

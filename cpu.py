@@ -1,7 +1,5 @@
-from operator import add
-
 from bus import Bus
-from exceptions import IllegalInstruction, InvalidCpuRegister, StackPointerOutsideRam
+from exceptions import IllegalInstruction, InvalidCpuRegister, StackPointerOutsideRam, MachineFault
 from tps import Address, Byte, Word
 from isa import Opcode, NUM_REGISTERS
 
@@ -12,7 +10,6 @@ class CPU():
     def __init__(self, bus: Bus, trace_mode: bool = False) -> None:
         # TRACING
         self.TRACE_MODE: bool = trace_mode
-        self.latest_opcode: Opcode | None = None
         self.bytes_for_operation: list[Byte] = []
 
         self.PC: Address = 0x0000
@@ -35,6 +32,8 @@ class CPU():
             Opcode.LDR: self._process_ldr,
             Opcode.PUSH: self._process_push,
             Opcode.POP: self._process_pop,
+            Opcode.CALL: self._process_call_,
+            Opcode.RET: self._process_ret,
         }
 
     def run(self) -> None:
@@ -42,24 +41,29 @@ class CPU():
             self.step()
 
     def step(self):
-        pc = self.PC
+        start_pc = self.PC
         if self.TRACE_MODE:
             self.bytes_for_operation = []
 
-        byte = self._fetch_byte()
-        op_code = self._get_opcpode(byte)
-        handler = self.operation_to_handler[op_code]
+        op_code = None
 
         try:
+            byte = self._fetch_byte()
+            op_code = self._get_opcpode(byte)
+            handler = self.operation_to_handler[op_code]
             handler()
+        except MachineFault:
+            self.PC = start_pc
+            raise
         finally:
             if self.TRACE_MODE:
-                self._print_trace(pc, op_code)
+                self._print_trace(start_pc, op_code)
 
-    def _print_trace(self, pc: int, op_code: Opcode) -> None:
+    def _print_trace(self, pc: int, op_code: Opcode | None) -> None:
+        name = op_code.name if op_code else "???"
         raw = " ".join(f"{b:02X}" for b in self.bytes_for_operation)
         regs = " ".join(f"r{i}={v:02X}" for i, v in enumerate(self.regs))
-        print(f"{pc:04X}  {raw:<12} {op_code.name:<6} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X}")
+        print(f"{pc:04X}  {raw:<12} {name:<6} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X}")
 
     ###### Cpu helpers
 
@@ -70,13 +74,13 @@ class CPU():
     def _set_pc(self, addr: Address) -> None:
         self.PC = addr
 
-    def _increment_sp(self) -> None:
-        self.SP += 1
-        self.SP = self.SP & 0xFFFF
+    def _set_sp(self, new_sp: Address) -> None:
+        self.SP = new_sp & 0xFFFF
 
-    def _decrement_sp(self) -> None:
-        self.SP -= 1
-        self.SP = self.SP & 0xFFFF
+    def _validate_sp(self, new_sp: Address) -> Address:
+        if not RAM_START <= new_sp <= RAM_END:
+            raise StackPointerOutsideRam(new_sp, RAM_START, RAM_END)
+        return new_sp
 
     def _fetch_byte(self) -> Byte:
         byte = self.bus.read(self.PC)
@@ -97,9 +101,6 @@ class CPU():
     def _get_opcpode(self, byte: Byte) -> Opcode:
         try:
             op_code = Opcode(byte)
-
-            if self.TRACE_MODE:
-                self.latest_opcode = op_code
 
             return op_code
         except ValueError:
@@ -191,19 +192,40 @@ class CPU():
         self._write_to_register(target_reg, byte)
 
     def _process_push(self):
-        self._decrement_sp()
-        if not RAM_START <= self.SP <= RAM_END:
-            raise StackPointerOutsideRam(self.SP, RAM_START, RAM_END)
-
         source_reg = self._fetch_byte()
         reg_value = self._read_from_register(source_reg)
-        self.bus.write(self.SP, reg_value)
+        new_sp = self._validate_sp(self.SP - 1)
+        self.bus.write(new_sp, reg_value)
+        self._set_sp(new_sp)
 
     def _process_pop(self):
         target_reg = self._fetch_byte()
+        new_sp = self._validate_sp(self.SP + 1)
         byte = self.bus.read(self.SP)
         self._write_to_register(target_reg, byte)
+        self._set_sp(new_sp)
 
-        self._increment_sp()
-        if not RAM_START <= self.SP <= RAM_END:
-            raise StackPointerOutsideRam(self.SP, RAM_START, RAM_END)
+    def _process_call_(self):
+        addr = self._fetch_word()
+
+        ret_addr_lo = self.PC & 0xFF
+        ret_addr_hi = self.PC >> 8
+
+        new_sp = self._validate_sp(self.SP - 2)
+
+        self.bus.write(new_sp + 1, ret_addr_lo)
+        self.bus.write(new_sp, ret_addr_hi)
+
+        self._set_sp(new_sp)
+        self._set_pc(addr)
+
+    def _process_ret(self):
+        new_sp = self._validate_sp(self.SP + 2)
+
+        ret_addr_hi = self.bus.read(self.SP)
+        ret_addr_lo = self.bus.read(self.SP + 1)
+
+        self._set_sp(new_sp)
+
+        ret_addr = ret_addr_hi << 8 | ret_addr_lo
+        self._set_pc(ret_addr)
