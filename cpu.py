@@ -6,6 +6,7 @@ from isa import Opcode, NUM_REGISTERS, PRIVILEGED_OPERATIONS
 RAM_START = 0x0400
 RAM_END = 0x0800
 KERNEL_ONLY_START = 0x0800
+TRAP_VECTOR = 0x0003
 
 
 class CPU:
@@ -38,6 +39,8 @@ class CPU:
             Opcode.POP: self._process_pop,
             Opcode.CALL: self._process_call_,
             Opcode.RET: self._process_ret,
+            Opcode.SYSCALL: self._process_syscall,
+            Opcode.RETI: self._process_reti,
         }
 
     def run(self) -> None:
@@ -71,7 +74,7 @@ class CPU:
         raw = " ".join(f"{b:02X}" for b in self.bytes_for_operation)
         regs = " ".join(f"r{i}={v:02X}" for i, v in enumerate(self.regs))
         mode = "K" if self.mode == CpuMode.KERNEL else "U"
-        print(f"{pc:04X}  {raw:<12} {name:<6} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X} M={mode} ")
+        print(f"{pc:04X}  {raw:<12} {name:<7} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X} M={mode} ")
 
     ############# Cpu helpers #############
 
@@ -89,6 +92,9 @@ class CPU:
         if not RAM_START <= new_sp <= RAM_END:
             raise StackPointerOutsideRam(new_sp, RAM_START, RAM_END)
         return new_sp
+
+    def _set_mode(self, mode_byte: Byte) -> None:
+        self.mode = CpuMode(mode_byte & 1)
 
     def _fetch_byte(self) -> Byte:
         byte = self._bus_read(self.PC)
@@ -137,6 +143,43 @@ class CPU:
             raise PrivilegedMemoryAccessViolation(addr)
 
         self.bus.write(addr, value)
+
+    def _pack_flags_byte(self) -> Byte:
+        return int(self.mode) | (0b10 if self.zero_flag else 0b00)
+
+    def _unpack_byte_and_set_flags(self, flags_byte) -> None:
+        self._set_mode(flags_byte & 0b01)
+
+        self.zero_flag = bool(flags_byte & 0b10)
+
+    def _enter_trap(self, saved_pc: Address):
+        new_sp = self._validate_sp(self.SP - 3)
+
+        pc_lo = saved_pc & 0xFF
+        pc_hi = saved_pc >> 8
+
+        self._bus_write(self.SP - 1, pc_lo)
+        self._bus_write(self.SP - 2, pc_hi)
+
+        flags_byte = self._pack_flags_byte()
+        self._bus_write(self.SP - 3, flags_byte)
+
+        self._set_sp(new_sp)
+        self._set_mode(CpuMode.KERNEL)
+        self._set_pc(TRAP_VECTOR)
+
+    def _exit_trap(self):
+        new_sp = self._validate_sp(self.SP + 3)
+
+        flags_byte = self._bus_read(self.SP)
+
+        pc_hi = self._bus_read(self.SP + 1)
+        pc_lo = self._bus_read(self.SP + 2)
+        pc = pc_hi << 8 | pc_lo
+
+        self._set_sp(new_sp)
+        self._unpack_byte_and_set_flags(flags_byte)
+        self._set_pc(pc)
 
     ############# OpCode processors #############
 
@@ -249,3 +292,9 @@ class CPU:
 
         ret_addr = ret_addr_hi << 8 | ret_addr_lo
         self._set_pc(ret_addr)
+
+    def _process_syscall(self):
+        self._enter_trap(self.PC)
+
+    def _process_reti(self):
+        self._exit_trap()

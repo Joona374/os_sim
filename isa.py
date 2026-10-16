@@ -18,8 +18,10 @@ class Opcode(Enum):
     POP = 0x0B
     CALL = 0x0C
     RET = 0x0D
+    SYSCALL = 0x0E
+    RETI = 0x0F
 
-PRIVILEGED_OPERATIONS = {Opcode.HALT}
+PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI}
 
 class Operand(Enum):
     REG = "register"  # 1 byte: register number
@@ -42,6 +44,8 @@ LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.POP: [Operand.REG],  # Target reg
     Opcode.CALL: [Operand.ADDR16],  # store current PC on to stack and jump to addr
     Opcode.RET: [],  # Jump back to address stored in to stack by CALL
+    Opcode.SYSCALL: [],
+    Opcode.RETI: [],
 }
 
 OPERAND_SIZE: dict[Operand, int] = {

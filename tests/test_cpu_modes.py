@@ -65,7 +65,7 @@ def test_kernel_mode_can_load_from_recording_device() -> None:
 
 
 def test_halt_is_a_privileged_operation() -> None:
-    assert getattr(isa, "PRIVILEGED_OPERATIONS", None) == {Opcode.HALT}
+    assert Opcode.HALT in isa.PRIVILEGED_OPERATIONS
 
 
 def test_user_mode_halt_faults_without_halting_or_advancing_pc() -> None:
@@ -239,10 +239,10 @@ def test_kernel_mode_can_load_from_protected_region() -> None:
 
 
 @pytest.mark.parametrize(
-    ("program", "start_mode", "fault_type", "fault_pc", "attribute", "value"),
+    ("program", "start_mode", "fault_type", "fault_pc", "attribute", "value", "stack_pointer"),
     [
-        (assembled(".byte 0xFF"), CpuMode.KERNEL, IllegalInstruction, 0, "value", 0xFF),
-        (bytes([Opcode.LOAD.value, 4, 1]), CpuMode.KERNEL, InvalidCpuRegister, 0, "value", 4),
+        (assembled(".byte 0xFF"), CpuMode.KERNEL, IllegalInstruction, 0, "value", 0xFF, None),
+        (bytes([Opcode.LOAD.value, 4, 1]), CpuMode.KERNEL, InvalidCpuRegister, 0, "value", 4, None),
         (
             assembled("LOAD R0, 0x0C\nLOAD R1, 0\nLDR R2, R0, R1"),
             CpuMode.KERNEL,
@@ -250,10 +250,11 @@ def test_kernel_mode_can_load_from_protected_region() -> None:
             6,
             "address",
             0x0C00,
+            None,
         ),
-        (assembled("LOAD R0, 1\nSTORE R0, 0"), CpuMode.KERNEL, WriteToRomError, 3, None, None),
-        (assembled("POP R0"), CpuMode.KERNEL, StackPointerOutsideRam, 0, "sp", RAM_END + 1),
-        (assembled("HALT"), CpuMode.USER, PrivilegedOperationViolation, 0, "operation", Opcode.HALT),
+        (assembled("LOAD R0, 1\nSTORE R0, 0"), CpuMode.KERNEL, WriteToRomError, 3, None, None, None),
+        (assembled("POP R0"), CpuMode.KERNEL, StackPointerOutsideRam, 0, "sp", RAM_END + 1, None),
+        (assembled("HALT"), CpuMode.USER, PrivilegedOperationViolation, 0, "operation", Opcode.HALT, None),
         (
             assembled("STORE R0, 0x0800"),
             CpuMode.USER,
@@ -261,9 +262,12 @@ def test_kernel_mode_can_load_from_protected_region() -> None:
             0,
             "address",
             KERNEL_ONLY_START,
+            None,
         ),
+        (assembled("SYSCALL"), CpuMode.USER, StackPointerOutsideRam, 0, "sp", RAM_START - 1, RAM_START + 2),
+        (assembled("RETI"), CpuMode.KERNEL, StackPointerOutsideRam, 0, "sp", RAM_END + 3, None),
     ],
-    ids=["illegal-opcode", "invalid-register", "unmapped-address", "write-to-rom", "stack-boundary", "privileged-op", "privileged-memory"],
+    ids=["illegal-opcode", "invalid-register", "unmapped-address", "write-to-rom", "stack-boundary", "privileged-op", "privileged-memory", "syscall-stack-overflow", "reti-empty-stack"],
 )
 def test_machine_fault_restores_pc_to_instruction_start(
     program: bytes,
@@ -272,8 +276,11 @@ def test_machine_fault_restores_pc_to_instruction_start(
     fault_pc: int,
     attribute: str | None,
     value: object,
+    stack_pointer: int | None,
 ) -> None:
     cpu, _ = build_machine(program, start_mode=start_mode)
+    if stack_pointer is not None:
+        cpu.SP = stack_pointer
     for _ in range(fault_pc // 3 + 1):
         if cpu.PC == fault_pc:
             break

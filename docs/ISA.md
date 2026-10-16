@@ -9,7 +9,8 @@ This describes the behavior implemented by the CPU and assembler. Programs are a
 | Registers | `R0`–`R3`, each 8-bit and initially zero |
 | `PC` | 16-bit program counter, starts at `0x0000` |
 | `SP` | 16-bit stack pointer, starts at `0x0800` |
-| Zero flag (`Z`) | Starts clear. `CMP` sets it for equal registers; `ADD`/`SUB` set it when the 8-bit result is zero. Other instructions leave it unchanged. |
+| Mode | Starts in kernel mode. User mode is selected by a trap-frame status byte or `start_mode`. |
+| Zero flag (`Z`) | Starts clear. `CMP` sets it for equal registers; `ADD`/`SUB` set it when the 8-bit result is zero. `SYSCALL` preserves it; `RETI` restores it from the frame. |
 | Word byte order | Big-endian: high byte first, then low byte |
 
 Default address map:
@@ -22,6 +23,18 @@ Default address map:
 | Everything else | Unmapped | Access faults |
 
 The stack grows down from `SP = 0x0800`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x0800` is a valid empty-stack boundary, not a RAM byte. Stack bytes occupy `0x0400`–`0x07FF`.
+
+`HALT` and `RETI` are privileged instructions; they fault in user mode. User-mode data accesses and instruction fetches at or above `0x0800` fault, while ROM and RAM below that address remain accessible. Kernel mode has no such address restriction.
+
+`SYSCALL` saves a three-byte frame and enters kernel mode at `TRAP_VECTOR = 0x0003`. If the old stack pointer is `SP`, the new `SP` is `SP - 3`; the frame is:
+
+| Offset from new `SP` | Contents |
+|---:|---|
+| `+0` | Status: bit 0 is mode (`0` kernel, `1` user); bit 1 is `Z`; other bits are ignored by `RETI` |
+| `+1` | Saved `PC` high byte |
+| `+2` | Saved `PC` low byte |
+
+The saved `PC` is the address after `SYSCALL`. `RETI` restores the status and `PC`, then advances `SP` by three. Software supplies the handler at the trap vector and decides what each system call means; those conventions are not part of the ISA.
 
 ## 2. Assembly Syntax
 
@@ -42,21 +55,23 @@ Directives place data directly in the image; the CPU does not skip it. Put data 
 
 Sizes include the opcode byte. `Z` is the only flag.
 
-| Mnemonic | Opcode | Operands | Size | Flags affected | Description |
-|---|---:|---|---:|---|---|
-| `HALT` | `01` | — | 1 | — | Stop execution. |
-| `LOAD` | `02` | register, imm8 | 3 | — | Load an 8-bit constant into a register. |
-| `STORE` | `03` | register, addr16 | 4 | — | Write a register byte to an absolute address. |
-| `JUMP` | `04` | addr16 | 3 | — | Set `PC` to an absolute address. |
-| `CMP` | `05` | register, register | 3 | `Z` | Set `Z` if the two register values are equal. |
-| `JZ` | `06` | addr16 | 3 | — | Jump if `Z` is set. |
-| `ADD` | `07` | register, register | 3 | `Z` | Add the second register into the first, modulo 256. |
-| `SUB` | `08` | register, register | 3 | `Z` | Subtract the second register from the first, modulo 256. |
-| `LDR` | `09` | target, high-address, low-address registers | 4 | — | Load a byte from the address formed by the two address registers. |
-| `PUSH` | `0A` | register | 2 | — | Push one byte onto the descending stack. |
-| `POP` | `0B` | register | 2 | — | Pop one byte into a register. |
-| `CALL` | `0C` | addr16 | 3 | — | Push the return address, then jump. |
-| `RET` | `0D` | — | 1 | — | Pop a return address into `PC`. |
+| Mnemonic | Opcode | Operands | Size | Flags affected | Privileged | Description |
+|---|---:|---|---:|---|---|---|
+| `HALT` | `01` | — | 1 | — | Yes | Stop execution. |
+| `LOAD` | `02` | register, imm8 | 3 | — | No | Load an 8-bit constant into a register. |
+| `STORE` | `03` | register, addr16 | 4 | — | No | Write a register byte to an absolute address. |
+| `JUMP` | `04` | addr16 | 3 | — | No | Set `PC` to an absolute address. |
+| `CMP` | `05` | register, register | 3 | `Z` | No | Set `Z` if the two register values are equal. |
+| `JZ` | `06` | addr16 | 3 | — | No | Jump if `Z` is set. |
+| `ADD` | `07` | register, register | 3 | `Z` | No | Add the second register into the first, modulo 256. |
+| `SUB` | `08` | register, register | 3 | `Z` | No | Subtract the second register from the first, modulo 256. |
+| `LDR` | `09` | target, high-address, low-address registers | 4 | — | No | Load a byte from the address formed by the two address registers. |
+| `PUSH` | `0A` | register | 2 | — | No | Push one byte onto the descending stack. |
+| `POP` | `0B` | register | 2 | — | No | Pop one byte into a register. |
+| `CALL` | `0C` | addr16 | 3 | — | No | Push the return address, then jump. |
+| `RET` | `0D` | — | 1 | — | No | Pop a return address into `PC`. |
+| `SYSCALL` | `0E` | — | 1 | — | No | Save the current status and next `PC`; enter the kernel at `0x0003`. |
+| `RETI` | `0F` | — | 1 | `Z` restored | Yes | Restore mode, `Z`, and `PC` from the three-byte trap frame. |
 
 For `STORE`, `JUMP`, `JZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` forms its address as `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
 
@@ -140,19 +155,35 @@ Layout: `0D`
 
 Example: `RET` → `0D`
 
+### `SYSCALL`
+
+Layout: `0E`
+
+Example: `SYSCALL` → `0E`
+
+### `RETI`
+
+Layout: `0F`
+
+Example: `RETI` → `0F`
+
 ## 4. Faults
 
 These are CPU/machine faults (`MachineFault`):
 
 | Fault | Trigger |
 |---|---|
-| `IllegalInstruction` | Opcode is not assigned, including `0x00` and `0x0E`–`0xFF`. |
+| `IllegalInstruction` | Opcode is not assigned, including `0x00` and `0x10`–`0xFF`. |
 | `InvalidCpuRegister` | An instruction accesses a register number outside `R0`–`R3`. |
 | `BusFaultUnmappedAddress` | Instruction fetch, data read, or data write touches an address outside every mapped device. |
 | `WriteToRomError` | A write targets ROM. |
-| `StackPointerOutsideRam` | `PUSH`, `POP`, `CALL`, or `RET` would move the stack pointer outside the allowed `0x0400`–`0x0800` bounds. |
+| `PrivilegedOperationViolation` | `HALT` or `RETI` executes in user mode. |
+| `PrivilegedMemoryAccessViolation` | A user-mode instruction fetch, data read, or data write accesses `0x0800` or above. |
+| `StackPointerOutsideRam` | `PUSH`, `POP`, `CALL`, `RET`, `SYSCALL`, or `RETI` would move the stack pointer outside the allowed `0x0400`–`0x0800` bounds. Trap-frame bounds are checked before frame reads or writes. |
 
 Assembler errors are **tool errors, not machine faults**. `AssemblerError` reports the source line for unknown mnemonics/directives, wrong operand counts, invalid names or registers, malformed literals/escapes, unknown names, duplicate definitions, and values outside the operand's byte/address range. The CLI reports these while assembling, before a program runs. A program image larger than ROM raises `ProgramDoesntFitOnRom` during machine setup; that is also not a CPU `MachineFault`.
+
+Stack faults from `SYSCALL` and `RETI` leave the frame, `SP`, mode, flags, and registers unchanged. The `step()` wrapper restores `PC` to the first byte of the faulting instruction.
 
 ## 5. Conventions (Not Enforced)
 
@@ -230,7 +261,9 @@ This prints `AB`; `emit` is at `0x000D`.
 - `ADD` and `SUB` have no immediate form; use a register holding the constant.
 - `LDR` uses two 8-bit registers for an address. Arithmetic on those registers does not carry between bytes, so pointer increments across a 256-byte boundary need explicit handling in software.
 - There are no indirect jumps/calls, stack-frame instructions, or general-purpose 16-bit registers.
-- The terminal's read method is not implemented.
+- There is no automatic kernel/handler installation: the program image must provide its vector and any boot code needed to enter user mode.
+- Trap frames use the same RAM stack as `PUSH`/`CALL`; nested traps consume another three bytes each.
+- `Terminal.read` is not implemented; reads from the terminal do not provide a usable byte.
 
 ## 8. Adding an Instruction
 
@@ -245,4 +278,5 @@ Keep these pieces in sync:
 
 ## 9. Discrepancies
 
-- `machine.py`'s terminal mapping comment says `0x0800`, but the registration maps a full 1 KiB region: `0x0800`–`0x0BFF`. The terminal address used by the examples is the base, `0x0800`.
+- `Terminal.read` is annotated as returning a byte but currently falls through and returns `None`. User-mode protection prevents user code from reading the terminal region; kernel-mode reads should not rely on a byte value.
+- `RETI` is specified as privileged, but the current `PRIVILEGED_OPERATIONS` set contains only `HALT`; user-mode `RETI` therefore does not currently raise `PrivilegedOperationViolation`.
