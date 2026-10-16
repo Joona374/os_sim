@@ -1,24 +1,30 @@
+from operator import add
+
 from bus import Bus
-from exceptions import IllegalInstruction, InvalidCpuRegister, StackPointerOutsideRam, MachineFault
-from tps import Address, Byte, Word
-from isa import Opcode, NUM_REGISTERS
+from exceptions import IllegalInstruction, InvalidCpuRegister, PrivilegeViolation, PrivilegedMemoryAccessViolation, PrivilegedOpertionViolation, StackPointerOutsideRam, MachineFault
+from tps import Address, Byte, Word, CpuMode
+from isa import Opcode, NUM_REGISTERS, PRIVLIDGED_OPERATIONS
 
 RAM_START = 0x0400
 RAM_END = 0x0800
+KERNEL_ONLY_START = 0x0800
 
-class CPU():
-    def __init__(self, bus: Bus, trace_mode: bool = False) -> None:
+
+class CPU:
+
+    def __init__(self, bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL) -> None:
         # TRACING
         self.TRACE_MODE: bool = trace_mode
         self.bytes_for_operation: list[Byte] = []
 
+        self.bus = bus
+        self.regs: list[Byte] = [0] * NUM_REGISTERS
+
         self.PC: Address = 0x0000
         self.SP: Address = RAM_END
-        self.regs: list[Byte] = [0] * NUM_REGISTERS
-        self.bus = bus
-
         self.halted: bool = False
         self.zero_flag: bool = False
+        self.mode: CpuMode = start_mode
 
         self.operation_to_handler = {
             Opcode.HALT: self._process_halt,
@@ -50,6 +56,9 @@ class CPU():
         try:
             byte = self._fetch_byte()
             op_code = self._get_opcpode(byte)
+            if op_code in PRIVLIDGED_OPERATIONS and self.mode == CpuMode.USER:
+                raise PrivilegedOpertionViolation(op_code)
+
             handler = self.operation_to_handler[op_code]
             handler()
         except MachineFault:
@@ -63,9 +72,10 @@ class CPU():
         name = op_code.name if op_code else "???"
         raw = " ".join(f"{b:02X}" for b in self.bytes_for_operation)
         regs = " ".join(f"r{i}={v:02X}" for i, v in enumerate(self.regs))
-        print(f"{pc:04X}  {raw:<12} {name:<6} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X}")
+        mode = "K" if self.mode == CpuMode.KERNEL else "U"
+        print(f"{pc:04X}  {raw:<12} {name:<6} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X} M={mode} ")
 
-    ###### Cpu helpers
+    ############# Cpu helpers #############
 
     def _increment_pc(self) -> None:
         self.PC += 1
@@ -83,7 +93,7 @@ class CPU():
         return new_sp
 
     def _fetch_byte(self) -> Byte:
-        byte = self.bus.read(self.PC)
+        byte = self._bus_read(self.PC)
         self._increment_pc()
 
         if self.TRACE_MODE:
@@ -118,7 +128,19 @@ class CPU():
         except IndexError:
             raise InvalidCpuRegister(register)
 
-    ###### OpCode processors
+    def _bus_read(self, addr: Address) -> Byte:
+        if addr >= KERNEL_ONLY_START and self.mode == CpuMode.USER:
+            raise PrivilegedMemoryAccessViolation(addr)
+
+        return self.bus.read(addr)
+
+    def _bus_write(self, addr: Address, value: Byte) -> None:
+        if addr >= KERNEL_ONLY_START and self.mode == CpuMode.USER:
+            raise PrivilegedMemoryAccessViolation(addr)
+
+        self.bus.write(addr, value)
+
+    ############# OpCode processors #############
 
     def _process_halt(self) -> None:
         self.halted = True
@@ -134,7 +156,7 @@ class CPU():
 
         value_at_reg = self._read_from_register(register)
 
-        self.bus.write(addr, value_at_reg)
+        self._bus_write(addr, value_at_reg)
 
     def _process_jump(self) -> None:
         addr = self._fetch_word()
@@ -188,20 +210,20 @@ class CPU():
         addr_lo = self._read_from_register(lo_reg)
         addr = (addr_hi << 8) | addr_lo
 
-        byte = self.bus.read(addr)
+        byte = self._bus_read(addr)
         self._write_to_register(target_reg, byte)
 
     def _process_push(self):
         source_reg = self._fetch_byte()
         reg_value = self._read_from_register(source_reg)
         new_sp = self._validate_sp(self.SP - 1)
-        self.bus.write(new_sp, reg_value)
+        self._bus_write(new_sp, reg_value)
         self._set_sp(new_sp)
 
     def _process_pop(self):
         target_reg = self._fetch_byte()
         new_sp = self._validate_sp(self.SP + 1)
-        byte = self.bus.read(self.SP)
+        byte = self._bus_read(self.SP)
         self._write_to_register(target_reg, byte)
         self._set_sp(new_sp)
 
@@ -213,8 +235,8 @@ class CPU():
 
         new_sp = self._validate_sp(self.SP - 2)
 
-        self.bus.write(new_sp + 1, ret_addr_lo)
-        self.bus.write(new_sp, ret_addr_hi)
+        self._bus_write(new_sp + 1, ret_addr_lo)
+        self._bus_write(new_sp, ret_addr_hi)
 
         self._set_sp(new_sp)
         self._set_pc(addr)
@@ -222,8 +244,8 @@ class CPU():
     def _process_ret(self):
         new_sp = self._validate_sp(self.SP + 2)
 
-        ret_addr_hi = self.bus.read(self.SP)
-        ret_addr_lo = self.bus.read(self.SP + 1)
+        ret_addr_hi = self._bus_read(self.SP)
+        ret_addr_lo = self._bus_read(self.SP + 1)
 
         self._set_sp(new_sp)
 

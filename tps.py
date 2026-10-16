@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from dataclasses import dataclass
+from enum import IntEnum
 
 if TYPE_CHECKING:
     from device import Device
@@ -11,7 +12,14 @@ Address = int   # 0..65535
 
 KB = 1024
 
+
 type Program = list[int]
+
+
+class CpuMode(IntEnum):
+    KERNEL = 0
+    USER = 1
+
 
 @dataclass(frozen=True)
 class MemoryRegion:

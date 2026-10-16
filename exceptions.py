@@ -1,3 +1,4 @@
+from isa import Opcode
 from tps import Address, Byte
 
 
@@ -9,8 +10,29 @@ class BusFault(MachineFault):
     pass
 
 
+class PrivilegeViolation(MachineFault):
+    pass
+
+
+class PrivilegedOpertionViolation(PrivilegeViolation):
+    """Raised when trying to execute a priviledged operation in user mode"""
+
+    def __init__(self, operation: Opcode) -> None:
+        super().__init__(f"Tried to execute: {operation} in user mode")
+        self.operation = operation
+
+
+class PrivilegedMemoryAccessViolation(PrivilegeViolation):
+    """Raised when trying to access priviledged memory in user mode"""
+
+    def __init__(self, address: Address) -> None:
+        super().__init__(f"Tried access address: 0x{address:04X} in user mode")
+        self.address = address
+
+
 class BusFaultUnmappedAddress(BusFault):
     """Raised when an access hits an address no device claims."""
+
     def __init__(self, address: Address) -> None:
         super().__init__(f"unmapped address: 0x{address:04X}")
         self.address = address
