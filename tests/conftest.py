@@ -1,14 +1,16 @@
 from bus import Bus
 from cpu import CPU, RAM_END, RAM_START
 from device import RAM, ROM
-
+from tps import CpuMode
 
 class RecordingDevice:
     def __init__(self) -> None:
         self.memory: dict[int, int] = {}
         self.writes: list[tuple[int, int]] = []
+        self.reads: int = 0
 
     def read(self, offset: int) -> int:
+        self.reads += 1
         return self.memory.get(offset, 0)
 
     def write(self, offset: int, value: int) -> None:
@@ -16,13 +18,17 @@ class RecordingDevice:
         self.memory[offset] = value
 
 
-def build_machine(program: bytes) -> tuple[CPU, RecordingDevice]:
+def build_machine(
+    program: bytes,
+    start_mode: CpuMode = CpuMode.KERNEL,
+    trace_mode: bool = False,
+) -> tuple[CPU, RecordingDevice]:
     bus = Bus()
     bus.register_device(0x0000, RAM_START, ROM(program))
     bus.register_device(RAM_START, RAM_END - RAM_START, RAM())
     recording_device = RecordingDevice()
     bus.register_device(RAM_END, RAM_END - RAM_START, recording_device)
-    return CPU(bus), recording_device
+    return CPU(bus, trace_mode=trace_mode, start_mode=start_mode), recording_device
 
 
 def run_cpu(cpu: CPU, max_steps: int = 1000) -> CPU:

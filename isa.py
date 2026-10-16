@@ -19,7 +19,7 @@ class Opcode(Enum):
     CALL = 0x0C
     RET = 0x0D
 
-PRIVLIDGED_OPERATIONS = {Opcode.HALT}
+PRIVILEGED_OPERATIONS = {Opcode.HALT}
 
 class Operand(Enum):
     REG = "register"  # 1 byte: register number

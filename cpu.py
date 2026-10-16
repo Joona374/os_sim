@@ -1,9 +1,7 @@
-from operator import add
-
 from bus import Bus
-from exceptions import IllegalInstruction, InvalidCpuRegister, PrivilegeViolation, PrivilegedMemoryAccessViolation, PrivilegedOpertionViolation, StackPointerOutsideRam, MachineFault
+from exceptions import IllegalInstruction, InvalidCpuRegister, PrivilegedMemoryAccessViolation, PrivilegedOperationViolation, StackPointerOutsideRam, MachineFault
 from tps import Address, Byte, Word, CpuMode
-from isa import Opcode, NUM_REGISTERS, PRIVLIDGED_OPERATIONS
+from isa import Opcode, NUM_REGISTERS, PRIVILEGED_OPERATIONS
 
 RAM_START = 0x0400
 RAM_END = 0x0800
@@ -56,8 +54,8 @@ class CPU:
         try:
             byte = self._fetch_byte()
             op_code = self._get_opcpode(byte)
-            if op_code in PRIVLIDGED_OPERATIONS and self.mode == CpuMode.USER:
-                raise PrivilegedOpertionViolation(op_code)
+            if op_code in PRIVILEGED_OPERATIONS and self.mode == CpuMode.USER:
+                raise PrivilegedOperationViolation(op_code)
 
             handler = self.operation_to_handler[op_code]
             handler()

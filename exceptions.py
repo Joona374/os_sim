@@ -14,7 +14,7 @@ class PrivilegeViolation(MachineFault):
     pass
 
 
-class PrivilegedOpertionViolation(PrivilegeViolation):
+class PrivilegedOperationViolation(PrivilegeViolation):
     """Raised when trying to execute a priviledged operation in user mode"""
 
     def __init__(self, operation: Opcode) -> None:
