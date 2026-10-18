@@ -55,6 +55,7 @@ class CPU:
             Opcode.RET: self._process_ret,
             Opcode.SYSCALL: self._process_syscall,
             Opcode.RETI: self._process_reti,
+            Opcode.JNZ: self._process_jnz,
         }
 
     def run(self) -> None:
@@ -331,3 +332,8 @@ class CPU:
 
     def _process_reti(self):
         self._exit_trap()
+
+    def _process_jnz(self):
+        jump_to_addr = self._fetch_word()
+        if self.zero_flag == False:
+            self._set_pc(jump_to_addr)

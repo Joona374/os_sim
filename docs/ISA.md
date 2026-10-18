@@ -88,8 +88,9 @@ Sizes include the opcode byte. `Z` is the only flag.
 | `RET` | `0D` | — | 1 | — | No | Pop a return address into `PC`. |
 | `SYSCALL` | `0E` | — | 1 | — | No | Save the current status and next `PC`; enter the kernel at `0x0003`. |
 | `RETI` | `0F` | — | 1 | `Z` restored | Yes | Restore mode, `Z`, and `PC` from the three-byte trap frame. |
+| `JNZ` | `10` | addr16 | 3 | — | No | Jump if `Z` is clear. |
 
-For `STORE`, `JUMP`, `JZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` forms its address as `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
+For `STORE`, `JUMP`, `JZ`, `JNZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` forms its address as `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
 
 Each example below was passed to the project assembler; the bytes shown are its output.
 
@@ -128,6 +129,12 @@ Example: `CMP R0, R1` → `05 00 01`
 Layout: opcode, address high byte, address low byte.
 
 Example: `JZ 0x0010` → `06 00 10`
+
+### `JNZ`
+
+Layout: opcode, address high byte, address low byte.
+
+Example: `JNZ 0x0010` → `10 00 10`
 
 ### `ADD`
 
@@ -189,7 +196,7 @@ These are CPU/machine faults (`MachineFault`):
 
 | Fault | Trigger |
 |---|---|
-| `IllegalInstruction` | Opcode is not assigned, including `0x00` and `0x10`–`0xFF`. |
+| `IllegalInstruction` | Opcode is not assigned, including `0x00` and `0x11`–`0xFF`. |
 | `InvalidCpuRegister` | An instruction accesses a register number outside `R0`–`R3`. |
 | `BusFaultUnmappedAddress` | Instruction fetch, data read, or data write touches an address outside every mapped device. |
 | `WriteToRomError` | A write targets ROM. |
@@ -273,7 +280,7 @@ This prints `AB`; `emit` is at `0x000D`.
 ## 7. Limitations
 
 - Arithmetic is 8-bit and wraps modulo 256. There is no carry, borrow, or signedness flag.
-- The only flag is `Z`; the only conditional jump is `JZ`.
+- The only flag is `Z`; conditional jumps are `JZ` and `JNZ`.
 - `ADD` and `SUB` have no immediate form; use a register holding the constant.
 - `LDR` uses two 8-bit registers for an address. Arithmetic on those registers does not carry between bytes, so pointer increments across a 256-byte boundary need explicit handling in software.
 - There are no indirect jumps/calls, stack-frame instructions, or general-purpose 16-bit registers.

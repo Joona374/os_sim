@@ -1,5 +1,4 @@
 import sys
-from tokenize import Double
 
 from exceptions import DoubleFault
 from machine import Machine
@@ -36,9 +35,9 @@ def main():
         machine.cpu.run()
     except DoubleFault as fault:
         print(fault)
-        return 1
+        sys.exit(1)
 
-    return 0
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()

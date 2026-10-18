@@ -6,7 +6,7 @@ class DoubleFault(Exception):
     pass
 
     def __init__(self, original_fault: Exception, seconday_fault: Exception, PC: Address) -> None:
-        super().__init__(f"The machine double faulted. At: 0x{PC:04X} | Original: {original_fault} | secondary: {seconday_fault}")
+        super().__init__(f"DoubleFault: The machine double faulted. At: 0x{PC:04X} | Original: {original_fault} | secondary: {seconday_fault}")
 
 
 class MachineFault(Exception):

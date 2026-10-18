@@ -19,6 +19,7 @@ class Opcode(Enum):
     RET = 0x0D
     SYSCALL = 0x0E
     RETI = 0x0F
+    JNZ = 0x10
 
 PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI}
 
@@ -45,6 +46,7 @@ LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.RET: [],  # Jump back to address stored in to stack by CALL
     Opcode.SYSCALL: [],
     Opcode.RETI: [],
+    Opcode.JNZ: [Operand.ADDR16],  # IF NOT zero_flag jump to Addr
 }
 
 OPERAND_SIZE: dict[Operand, int] = {
