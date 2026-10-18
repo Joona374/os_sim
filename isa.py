@@ -1,5 +1,4 @@
 from enum import Enum
-from webbrowser import Opera
 
 NUM_REGISTERS = 4
 

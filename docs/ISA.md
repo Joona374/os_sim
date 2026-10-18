@@ -9,7 +9,7 @@ This describes the behavior implemented by the CPU and assembler. Programs are a
 | Registers | `R0`–`R3`, each 8-bit and initially zero |
 | `PC` | 16-bit program counter, starts at `0x0000` |
 | `SP` | 16-bit stack pointer, starts at `0x0800` |
-| Mode | Starts in kernel mode. User mode is selected by a trap-frame status byte or `start_mode`. |
+| Mode | Starts in kernel mode unless `start_mode` selects user mode. |
 | Zero flag (`Z`) | Starts clear. `CMP` sets it for equal registers; `ADD`/`SUB` set it when the 8-bit result is zero. `SYSCALL` preserves it; `RETI` restores it from the frame. |
 | Word byte order | Big-endian: high byte first, then low byte |
 
@@ -24,9 +24,21 @@ Default address map:
 
 The stack grows down from `SP = 0x0800`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x0800` is a valid empty-stack boundary, not a RAM byte. Stack bytes occupy `0x0400`–`0x07FF`.
 
+The CPU starts at `PC = 0x0000`. The ROM convention reserves its first 15 bytes for five three-byte absolute `JUMP` vectors:
+
+| Address | Purpose |
+|---:|---|
+| `0x0000` | Reset entry |
+| `0x0003` | `SYSCALL_TRAP_VECTOR` |
+| `0x0006` | `PRIV_FAULT_VECTOR` |
+| `0x0009` | `BUS_FAULT_VECTOR` |
+| `0x000C` | `MACHINE_FAULT_VECTOR` |
+
+`HALT` and `RETI` are privileged instructions; they fault in user mode. User-mode data accesses and instruction fetches at or above `0x0800` fault, while ROM and RAM below that address remain accessible. Kernel mode has no such address restriction. `Machine` defaults `handle_machine_faults` to off; the CLI enables it with `--handle-faults`.
+
 `HALT` and `RETI` are privileged instructions; they fault in user mode. User-mode data accesses and instruction fetches at or above `0x0800` fault, while ROM and RAM below that address remain accessible. Kernel mode has no such address restriction.
 
-`SYSCALL` saves a three-byte frame and enters kernel mode at `TRAP_VECTOR = 0x0003`. If the old stack pointer is `SP`, the new `SP` is `SP - 3`; the frame is:
+`SYSCALL` saves a three-byte frame and enters kernel mode at `SYSCALL_TRAP_VECTOR`. If the old stack pointer is `SP`, the new `SP` is `SP - 3`; the frame is:
 
 | Offset from new `SP` | Contents |
 |---:|---|
@@ -34,7 +46,11 @@ The stack grows down from `SP = 0x0800`. `PUSH` writes at `SP - 1`; `POP` reads 
 | `+1` | Saved `PC` high byte |
 | `+2` | Saved `PC` low byte |
 
-The saved `PC` is the address after `SYSCALL`. `RETI` restores the status and `PC`, then advances `SP` by three. Software supplies the handler at the trap vector and decides what each system call means; those conventions are not part of the ISA.
+For `SYSCALL`, the saved `PC` is the address after that instruction. `RETI` restores the status and `PC`, then advances `SP` by three. Software supplies the handler at the trap vector and decides what each system call means; those conventions are not part of the ISA.
+
+Machine-fault handling is optional. With `handle_machine_faults=False`, `step()` restores `PC` to the first byte of the faulting instruction and raises the fault. With it enabled, `step()` restores that `PC`, saves it with the pre-fault mode and `Z` in the same frame, enters kernel mode at the selected fault vector, and returns normally. Registers and `Z` are unchanged by delivery. `PrivilegeViolation` faults use `PRIV_FAULT_VECTOR`; `BusFault` faults use `BUS_FAULT_VECTOR`; all other `MachineFault` instances use `MACHINE_FAULT_VECTOR`. Non-machine exceptions propagate.
+
+If trap entry itself raises a `MachineFault`, the CPU raises `DoubleFault` and sets `halted`. `SP`, mode, `Z`, registers, and the faulting `PC` remain unchanged by the failed entry; the exception message includes the original fault, secondary fault, and `PC`. `DoubleFault` is not a `MachineFault`.
 
 ## 2. Assembly Syntax
 
@@ -183,7 +199,7 @@ These are CPU/machine faults (`MachineFault`):
 
 Assembler errors are **tool errors, not machine faults**. `AssemblerError` reports the source line for unknown mnemonics/directives, wrong operand counts, invalid names or registers, malformed literals/escapes, unknown names, duplicate definitions, and values outside the operand's byte/address range. The CLI reports these while assembling, before a program runs. A program image larger than ROM raises `ProgramDoesntFitOnRom` during machine setup; that is also not a CPU `MachineFault`.
 
-Stack faults from `SYSCALL` and `RETI` leave the frame, `SP`, mode, flags, and registers unchanged. The `step()` wrapper restores `PC` to the first byte of the faulting instruction.
+Stack faults from `SYSCALL` and `RETI` leave the frame, `SP`, mode, flags, and registers unchanged. The `step()` wrapper restores `PC` to the first byte of the faulting instruction. When fault handling is enabled, a failed attempt to deliver such a fault becomes a `DoubleFault`.
 
 ## 5. Conventions (Not Enforced)
 
@@ -263,6 +279,7 @@ This prints `AB`; `emit` is at `0x000D`.
 - There are no indirect jumps/calls, stack-frame instructions, or general-purpose 16-bit registers.
 - There is no automatic kernel/handler installation: the program image must provide its vector and any boot code needed to enter user mode.
 - Trap frames use the same RAM stack as `PUSH`/`CALL`; nested traps consume another three bytes each.
+- No instruction reads `SP`, so a handler cannot locate the saved `PC` relative to the current stack pointer using only the ISA. User stack overflow can prevent delivery of the resulting stack fault and cause a `DoubleFault`.
 - `Terminal.read` is not implemented; reads from the terminal do not provide a usable byte.
 
 ## 8. Adding an Instruction
@@ -279,4 +296,4 @@ Keep these pieces in sync:
 ## 9. Discrepancies
 
 - `Terminal.read` is annotated as returning a byte but currently falls through and returns `None`. User-mode protection prevents user code from reading the terminal region; kernel-mode reads should not rely on a byte value.
-- `RETI` is specified as privileged, but the current `PRIVILEGED_OPERATIONS` set contains only `HALT`; user-mode `RETI` therefore does not currently raise `PrivilegedOperationViolation`.
+- `main.py` enables fault delivery only when `--handle-faults` is supplied and does not catch `DoubleFault`; a double fault therefore propagates out of `run()` instead of being converted to a CLI error message.

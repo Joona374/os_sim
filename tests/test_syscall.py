@@ -1,7 +1,7 @@
 import pytest
 
 from assembler import assemble
-from cpu import RAM_END, RAM_START, TRAP_VECTOR
+from cpu import RAM_END, RAM_START, SYSCALL_TRAP_VECTOR
 from exceptions import PrivilegedMemoryAccessViolation, PrivilegedOperationViolation, StackPointerOutsideRam
 from isa import LAYOUT, Opcode, PRIVILEGED_OPERATIONS
 from tps import CpuMode
@@ -53,7 +53,7 @@ def test_syscall_and_reti_encoding_layout_and_privilege() -> None:
 def test_user_syscall_enters_kernel_at_trap_vector_and_saves_pc() -> None:
     cpu, _ = build_machine(assembled("SYSCALL"), start_mode=CpuMode.USER)
     cpu.step()
-    assert (cpu.mode, cpu.PC, cpu.SP) == (CpuMode.KERNEL, TRAP_VECTOR, RAM_END - 3)
+    assert (cpu.mode, cpu.PC, cpu.SP) == (CpuMode.KERNEL, SYSCALL_TRAP_VECTOR, RAM_END - 3)
     assert [cpu.bus.read(cpu.SP + i) for i in range(3)] == [1, 0, 1]
 
 

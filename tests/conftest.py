@@ -22,13 +22,22 @@ def build_machine(
     program: bytes,
     start_mode: CpuMode = CpuMode.KERNEL,
     trace_mode: bool = False,
+    handle_machine_faults: bool = False,
 ) -> tuple[CPU, RecordingDevice]:
     bus = Bus()
     bus.register_device(0x0000, RAM_START, ROM(program))
     bus.register_device(RAM_START, RAM_END - RAM_START, RAM())
     recording_device = RecordingDevice()
     bus.register_device(RAM_END, RAM_END - RAM_START, recording_device)
-    return CPU(bus, trace_mode=trace_mode, start_mode=start_mode), recording_device
+    return (
+        CPU(
+            bus,
+            trace_mode=trace_mode,
+            start_mode=start_mode,
+            handle_machine_faults=handle_machine_faults,
+        ),
+        recording_device,
+    )
 
 
 def run_cpu(cpu: CPU, max_steps: int = 1000) -> CPU:

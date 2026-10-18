@@ -2,9 +2,15 @@ from isa import Opcode
 from tps import Address, Byte
 
 
-class MachineFault(Exception):
-    """Event inside the simulated machine; the CPU may later turn these into traps."""
+class DoubleFault(Exception):
+    pass
 
+    def __init__(self, original_fault: Exception, seconday_fault: Exception, PC: Address) -> None:
+        super().__init__(f"The machine double faulted. At: 0x{PC:04X} | Original: {original_fault} | secondary: {seconday_fault}")
+
+
+class MachineFault(Exception):
+    """Event inside the simulated machine; the CPU turns these into traps."""
 
 class BusFault(MachineFault):
     pass

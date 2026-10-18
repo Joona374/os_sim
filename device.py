@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from exceptions import ProgramDoesntFitOnRom, WriteToRomError
-from tps import Byte, Address, Program, Word, KB
+from tps import Byte, Address, KB
 
 class Device(ABC):
     @abstractmethod
@@ -42,11 +42,11 @@ class Terminal(Device):
         self.TRACING_MODE = tracing_mode
 
     def read(self, offset):
-        pass
+        return 0x00  # Success message
 
     def write(self, offset, value):
         print(chr(value), end="")
-        
+
         if self.TRACING_MODE:
             print("") # Print line break after each character in tracing mode
             # so that it doesnt mix with the tracing output of the CPU

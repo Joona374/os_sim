@@ -1,19 +1,33 @@
 from bus import Bus
-from exceptions import IllegalInstruction, InvalidCpuRegister, PrivilegedMemoryAccessViolation, PrivilegedOperationViolation, StackPointerOutsideRam, MachineFault
+from exceptions import (
+    BusFault,
+    DoubleFault,
+    IllegalInstruction,
+    InvalidCpuRegister,
+    PrivilegeViolation,
+    PrivilegedMemoryAccessViolation,
+    PrivilegedOperationViolation,
+    StackPointerOutsideRam,
+    MachineFault,
+)
 from tps import Address, Byte, Word, CpuMode
 from isa import Opcode, NUM_REGISTERS, PRIVILEGED_OPERATIONS
 
 RAM_START = 0x0400
 RAM_END = 0x0800
 KERNEL_ONLY_START = 0x0800
-TRAP_VECTOR = 0x0003
+SYSCALL_TRAP_VECTOR = 0x0003
+PRIV_FAULT_VECTOR = 0x0006
+BUS_FAULT_VECTOR = 0x0009
+MACHINE_FAULT_VECTOR = 0x000C
 
 
 class CPU:
 
-    def __init__(self, bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL) -> None:
+    def __init__(self, bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False) -> None:
         # TRACING
         self.TRACE_MODE: bool = trace_mode
+        self.handle_machine_faults = handle_machine_faults
         self.bytes_for_operation: list[Byte] = []
 
         self.bus = bus
@@ -62,9 +76,12 @@ class CPU:
 
             handler = self.operation_to_handler[op_code]
             handler()
-        except MachineFault:
+        except MachineFault as fault:
             self.PC = start_pc
-            raise
+            if self.handle_machine_faults:
+                self._handle_machine_fault(fault)
+            else:
+                raise
         finally:
             if self.TRACE_MODE:
                 self._print_trace(start_pc, op_code)
@@ -152,7 +169,7 @@ class CPU:
 
         self.zero_flag = bool(flags_byte & 0b10)
 
-    def _enter_trap(self, saved_pc: Address):
+    def _enter_trap(self, saved_pc: Address, vector: Address):
         new_sp = self._validate_sp(self.SP - 3)
 
         pc_lo = saved_pc & 0xFF
@@ -166,7 +183,7 @@ class CPU:
 
         self._set_sp(new_sp)
         self._set_mode(CpuMode.KERNEL)
-        self._set_pc(TRAP_VECTOR)
+        self._set_pc(vector)
 
     def _exit_trap(self):
         new_sp = self._validate_sp(self.SP + 3)
@@ -180,6 +197,22 @@ class CPU:
         self._set_sp(new_sp)
         self._unpack_byte_and_set_flags(flags_byte)
         self._set_pc(pc)
+
+    def _handle_machine_fault(self, fault: MachineFault):
+        trap_vector = None
+
+        if isinstance(fault, PrivilegeViolation):
+            trap_vector = PRIV_FAULT_VECTOR
+        elif isinstance(fault, BusFault):
+            trap_vector = BUS_FAULT_VECTOR
+        else:
+            trap_vector = MACHINE_FAULT_VECTOR
+
+        try:
+            self._enter_trap(self.PC, trap_vector)
+        except MachineFault as secondary:
+            self.halted = True
+            raise DoubleFault(fault, secondary, self.PC) from secondary
 
     ############# OpCode processors #############
 
@@ -294,7 +327,7 @@ class CPU:
         self._set_pc(ret_addr)
 
     def _process_syscall(self):
-        self._enter_trap(self.PC)
+        self._enter_trap(self.PC, SYSCALL_TRAP_VECTOR)
 
     def _process_reti(self):
         self._exit_trap()

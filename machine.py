@@ -5,7 +5,7 @@ from tps import KB, CpuMode
 
 class Machine():
 
-    def __init__(self, image_path: str, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL) -> None:
+    def __init__(self, image_path: str, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False) -> None:
         self.bus = Bus()
 
         image = self.load_image(image_path)
@@ -18,7 +18,7 @@ class Machine():
         self.terminal = Terminal(trace_mode)
         self.bus.register_device(2 * KB, KB, self.terminal)  # 0x800 (prints), nothing else used YET
 
-        self.cpu = CPU(self.bus, trace_mode=trace_mode, start_mode=start_mode)
+        self.cpu = CPU(self.bus, trace_mode=trace_mode, start_mode=start_mode, handle_machine_faults=handle_machine_faults)
 
     def load_image(self, path: str) -> bytes:
         with open(path) as f:
