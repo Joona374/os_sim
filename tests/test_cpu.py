@@ -1,7 +1,10 @@
+from pathlib import Path
+import re
+
 import pytest
 
 from cpu import CPU
-from exceptions import MachineFault
+from exceptions import InvalidCpuRegister, MachineFault
 from isa import LAYOUT, Opcode
 
 from conftest import build_machine, run_program
@@ -36,6 +39,85 @@ def test_cmp_clears_zero_flag_after_unequal_comparison() -> None:
     program = bytes([0x02, 0x00, 1, 0x02, 0x01, 1, 0x05, 0, 1, 0x02, 0x01, 2, 0x05, 0, 1, 1])
     cpu = run_program(program)
     assert cpu.zero_flag is False
+
+
+@pytest.mark.parametrize(
+    ("register_value", "immediate", "initial_flag", "expected_flag"),
+    [
+        (0x00, 0x00, False, True),
+        (0x00, 0xFF, True, False),
+        (0xFF, 0xFF, False, True),
+        (0xFF, 0x00, True, False),
+    ],
+    ids=["zero-equal", "zero-unequal-clears", "max-equal", "max-unequal-clears"],
+)
+def test_cmpi_sets_zero_flag_without_changing_registers(
+    register_value: int, immediate: int, initial_flag: bool, expected_flag: bool
+) -> None:
+    cpu, _ = build_machine(bytes([Opcode.CMPI.value, 0, immediate]))
+    cpu.regs = [register_value, 0x12, 0x34, 0x56]
+    registers = cpu.regs.copy()
+    cpu.zero_flag = initial_flag
+
+    cpu.step()
+
+    assert cpu.regs == registers
+    assert cpu.zero_flag is expected_flag
+    assert cpu.PC == 3
+
+
+@pytest.mark.parametrize(
+    ("initial", "immediate", "expected", "initial_flag", "expected_flag"),
+    [
+        (7, 5, 12, False, False),
+        (0xFF, 1, 0, False, True),
+        (0, 0, 0, False, True),
+        (2, 1, 3, True, False),
+    ],
+    ids=["normal-add", "wraps-to-zero", "zero-plus-zero", "clears-set-zero"],
+)
+def test_addi_wraps_result_sets_zero_flag_and_preserves_other_registers(
+    initial: int, immediate: int, expected: int, initial_flag: bool, expected_flag: bool
+) -> None:
+    cpu, _ = build_machine(bytes([Opcode.ADDI.value, 1, immediate]))
+    cpu.regs = [0x11, initial, 0x33, 0x44]
+    cpu.zero_flag = initial_flag
+
+    cpu.step()
+
+    assert cpu.regs == [0x11, expected, 0x33, 0x44]
+    assert cpu.zero_flag is expected_flag
+    assert cpu.PC == 3
+
+
+@pytest.mark.parametrize("zero_flag", [False, True], ids=["taken", "not-taken"])
+def test_jnz_consumes_address_without_changing_zero_flag(zero_flag: bool) -> None:
+    cpu, _ = build_machine(bytes([Opcode.JNZ.value, 0, 6, Opcode.HALT.value, Opcode.HALT.value, Opcode.HALT.value, Opcode.HALT.value]))
+    cpu.zero_flag = zero_flag
+
+    cpu.step()
+
+    assert cpu.PC == (3 if zero_flag else 6)
+    assert cpu.zero_flag is zero_flag
+
+
+@pytest.mark.parametrize("opcode", [Opcode.CMPI, Opcode.ADDI], ids=["CMPI", "ADDI"])
+def test_new_instruction_invalid_register_fault_is_side_effect_free(opcode: Opcode) -> None:
+    cpu, _ = build_machine(bytes([opcode.value, 4, 0xA5]))
+    cpu.regs = [0x11, 0x22, 0x33, 0x44]
+    cpu.zero_flag = True
+    cpu.SP -= 2
+    registers = cpu.regs.copy()
+    memory = [cpu.bus.read(address) for address in range(0x0400, 0x0800)]
+    initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())
+
+    with pytest.raises(InvalidCpuRegister):
+        cpu.step()
+
+    assert cpu.PC == 0
+    assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
+    assert cpu.regs == registers
+    assert [cpu.bus.read(address) for address in range(0x0400, 0x0800)] == memory
 
 
 def test_jz_jumps_when_zero_flag_is_set_and_falls_through_when_clear() -> None:
@@ -118,3 +200,12 @@ def test_each_opcode_has_layout_and_cpu_handler() -> None:
     cpu, _ = build_machine(bytes([Opcode.HALT.value]))
     assert set(LAYOUT) == set(Opcode)
     assert set(cpu.operation_to_handler) == set(Opcode)
+
+    docs = Path(__file__).resolve().parents[1] / "docs" / "ISA.md"
+    rows = {
+        mnemonic: int(opcode, 16)
+        for mnemonic, opcode in re.findall(
+            r"^\| `([A-Z]+)` \| `([0-9A-F]{2})` \|", docs.read_text(), re.MULTILINE
+        )
+    }
+    assert rows == {opcode.name: opcode.value for opcode in Opcode}

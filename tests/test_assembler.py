@@ -88,6 +88,47 @@ def test_constants_without_spaces_can_reference_earlier_constants() -> None:
     assert b"".join(assemble(source)) == bytes([0x02, 0, 0x20, 0x01])
 
 
+def test_new_instruction_encodings_accept_constants_and_label_bytes() -> None:
+    source = (
+        "SOME_CONSTANT = 0xA5\n"
+        "CMPI R0, SOME_CONSTANT\n"
+        "ADDI R1, >target\n"
+        "CMPI R2, <target\n"
+        "JNZ target\n"
+        "HALT\n"
+        "target:\n"
+        "HALT"
+    )
+    assert b"".join(assemble(source)) == bytes(
+        [0x11, 0, 0xA5, 0x12, 1, 0, 0x11, 2, 0x0D, 0x10, 0, 0x0D, 0x01, 0x01]
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "CMPI R0, 256\n",
+        "CMPI R0, -1\n",
+        "ADDI R0, 256\n",
+        "ADDI R0, -1\n",
+        "CMPI R4, 1\n",
+        "ADDI R4, 1\n",
+        "JNZ\n",
+        "CMPI R0\n",
+        "ADDI R0, 1, 2\n",
+        "JNZ 0, 1\n",
+    ],
+    ids=[
+        "cmpi-too-large", "cmpi-negative", "addi-too-large", "addi-negative",
+        "cmpi-bad-register", "addi-bad-register", "jnz-missing-operand",
+        "cmpi-missing-operand", "addi-extra-operand", "jnz-extra-operand",
+    ],
+)
+def test_new_instructions_reject_invalid_operands(source: str) -> None:
+    with pytest.raises(AssemblerError, match=r"line 1:"):
+        assemble(source)
+
+
 @pytest.mark.parametrize(
     ("source", "line_no"),
     [

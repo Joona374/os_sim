@@ -20,6 +20,8 @@ class Opcode(Enum):
     SYSCALL = 0x0E
     RETI = 0x0F
     JNZ = 0x10
+    CMPI = 0x11
+    ADDI = 0x12
 
 PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI}
 
@@ -47,6 +49,8 @@ LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.SYSCALL: [],
     Opcode.RETI: [],
     Opcode.JNZ: [Operand.ADDR16],  # IF NOT zero_flag jump to Addr
+    Opcode.CMPI: [Operand.REG, Operand.IMM8],
+    Opcode.ADDI: [Operand.REG, Operand.IMM8],
 }
 
 OPERAND_SIZE: dict[Operand, int] = {

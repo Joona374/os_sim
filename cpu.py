@@ -56,6 +56,8 @@ class CPU:
             Opcode.SYSCALL: self._process_syscall,
             Opcode.RETI: self._process_reti,
             Opcode.JNZ: self._process_jnz,
+            Opcode.CMPI: self._process_cmpi,
+            Opcode.ADDI: self._process_addi,
         }
 
     def run(self) -> None:
@@ -142,6 +144,10 @@ class CPU:
         try:
             return self.regs[register]
         except IndexError:
+            raise InvalidCpuRegister(register)
+
+    def _validate_register(self, register: int) -> None:
+        if register < 0 or register >= len(self.regs):
             raise InvalidCpuRegister(register)
 
     def _write_to_register(self, register: int, value: Byte):
@@ -277,6 +283,7 @@ class CPU:
 
     def _process_ldr(self):
         target_reg = self._fetch_byte()
+        self._validate_register(target_reg)
 
         hi_reg = self._fetch_byte()
         lo_reg = self._fetch_byte()
@@ -337,3 +344,25 @@ class CPU:
         jump_to_addr = self._fetch_word()
         if self.zero_flag == False:
             self._set_pc(jump_to_addr)
+
+    def _process_cmpi(self):
+        reg = self._fetch_byte()
+        self._validate_register(reg)
+        value = self._fetch_byte()
+
+        if self._read_from_register(reg) == value:
+            self.zero_flag = True
+        else:
+            self.zero_flag = False
+
+    def _process_addi(self):
+        reg = self._fetch_byte()
+        self._validate_register(reg)
+
+        imm_value = self._fetch_byte()
+        reg_value = self._read_from_register(reg)
+
+        add_result = (reg_value + imm_value) & 0xFF
+
+        self._write_to_register(reg, add_result)
+        self.zero_flag = add_result == 0

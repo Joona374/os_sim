@@ -1,6 +1,8 @@
 TERMINAL = 0x0800
 SYS_PRINT_R1 = 1
 SYS_EXIT = 2
+SYS_PRINT_STRING = 3
+INVALID_SYSCALL_ERROR = 0xEE
 
 JUMP boot
 JUMP syscall
@@ -18,24 +20,29 @@ boot:
     RETI
 
 main:
-    HALT
+    <TODO>
 
 syscall:
-    PUSH R3                 ; hold on to value in stack
+    PUSH R1
+    PUSH R2
+    PUSH R3
     
-    LOAD R3, SYS_PRINT_R1
-    CMP R0, R3
+    CMPI R0, SYS_PRINT_R1
     JZ print_r1
 
-    LOAD R3, SYS_EXIT
-    CMP R0, R3
+    CMPI R0, SYS_EXIT
     JZ exit
+
+    CMPI R0, SYS_PRINT_STRING
+    JZ sys_print_string
     
-    LOAD R0, 0xEE           ; this is an error code (that im too lazy to check for :D)
+    LOAD R0, INVALID_SYSCALL_ERROR      ; this is an error code (that im too lazy to check for :D)
     JUMP trap_done
 
 trap_done:
-    POP R3                  ; lastly return r3
+    POP R3
+    POP R2
+    POP R1
     RETI
 
 print_r1:
@@ -48,34 +55,41 @@ exit:
     STORE R0, TERMINAL
     HALT
 
+sys_print_string:
+    CALL print_string
+    LOAD R0, 0
+    JUMP trap_done
+
 priv_fault:
-    LOAD R2, >priv_fault_string
-    LOAD R3, <priv_fault_string 
+    LOAD R1, >priv_fault_string
+    LOAD R2, <priv_fault_string 
     CALL print_string
     HALT
 
 bus_fault:
-    LOAD R2, >bus_fault_string
-    LOAD R3, <bus_fault_string
+    LOAD R1, >bus_fault_string
+    LOAD R2, <bus_fault_string
     CALL print_string
     HALT
 
 machine_fault:
-    LOAD R2, >machine_fault_string
-    LOAD R3, <machine_fault_string
+    LOAD R1, >machine_fault_string
+    LOAD R2, <machine_fault_string
     CALL print_string
     HALT
 
 print_string:
 print_loop:
-    LDR R0, R2, R3
-    LOAD R1, 0x00
-    CMP R0, R1
+    LDR R0, R1, R2
+    CMPI R0, 0x00
     JZ exit_print
 
     STORE R0, TERMINAL    
-    LOAD R1, 0x01
-    ADD R3, R1
+    ADDI R2, 0x01
+
+    JNZ print_loop
+
+    ADDI R1, 0x01
     JUMP print_loop
 
 exit_print:
@@ -83,7 +97,7 @@ exit_print:
 
 
 priv_fault_string:
-    .string "PRIVILLEGE FAULT"
+    .string "PRIVILEGE FAULT"
 
 bus_fault_string:
     .string "BUS FAULT"
@@ -91,3 +105,5 @@ bus_fault_string:
 machine_fault_string:
     .string "MACHINE FAULT"
 
+long_string:
+    .string "THIS IS A VERY LONG STRING SO I WONDER WHAT IS GOING TO HAPPEN WILL THIS OVER FLOW OR WHAT WILL HAPPEN BECAUSE IT NEEDS TO BE MORE THAN 256 CHARACTERS TO BREAK OH NO OH NO IS THIS ALREADY ENOUGH I DON KNOW?!???"
