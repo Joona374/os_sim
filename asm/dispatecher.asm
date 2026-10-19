@@ -45,10 +45,7 @@ main:
     LOAD R0, SYS_EXIT       ; lets exit the program
     SYSCALL
 
-exit:
-    LOAD R0, 0x45           ; print E just to show we exited
-    STORE R0, TERMINAL
-    HALT
+
 
 print_r1:
     STORE R1, TERMINAL

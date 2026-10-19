@@ -213,7 +213,7 @@ class CPU:
             self._enter_trap(self.PC, trap_vector)
         except MachineFault as secondary:
             self.halted = True
-            raise DoubleFault(fault, secondary, self.PC) from secondary
+            raise DoubleFault(fault, secondary, self.PC)
 
     ############# OpCode processors #############
 
