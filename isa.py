@@ -1,4 +1,5 @@
 from enum import Enum
+from token import OP
 
 NUM_REGISTERS = 4
 
@@ -22,6 +23,7 @@ class Opcode(Enum):
     JNZ = 0x10
     CMPI = 0x11
     ADDI = 0x12
+    MOV = 0x13
 
 PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI}
 
@@ -51,6 +53,7 @@ LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.JNZ: [Operand.ADDR16],  # IF NOT zero_flag jump to Addr
     Opcode.CMPI: [Operand.REG, Operand.IMM8],
     Opcode.ADDI: [Operand.REG, Operand.IMM8],
+    Opcode.MOV: [Operand.REG, Operand.REG],
 }
 
 OPERAND_SIZE: dict[Operand, int] = {

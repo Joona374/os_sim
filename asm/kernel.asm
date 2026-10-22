@@ -2,6 +2,8 @@ TERMINAL = 0x0800
 SYS_PRINT_R1 = 1
 SYS_EXIT = 2
 SYS_PRINT_STRING = 3
+SYS_READ_CHAR = 4
+
 INVALID_SYSCALL_ERROR = 0xEE
 
 JUMP boot
@@ -35,6 +37,9 @@ syscall:
 
     CMPI R0, SYS_PRINT_STRING
     JZ sys_print_string
+
+    CMPI R0, SYS_READ_CHAR
+    JZ poll_char
     
     LOAD R0, INVALID_SYSCALL_ERROR      ; this is an error code (that im too lazy to check for :D)
     JUMP trap_done
@@ -49,11 +54,6 @@ print_r1:
     STORE R1, TERMINAL
     LOAD R0, 0
     JUMP trap_done
-
-exit:
-    LOAD R0, 0x45           ; print E just to show we exited
-    STORE R0, TERMINAL
-    HALT
 
 sys_print_string:
     CALL print_string
@@ -79,7 +79,6 @@ machine_fault:
     HALT
 
 print_string:
-print_loop:
     LDR R0, R1, R2
     CMPI R0, 0x00
     JZ exit_print
@@ -87,14 +86,30 @@ print_loop:
     STORE R0, TERMINAL    
     ADDI R2, 0x01
 
-    JNZ print_loop
+    JNZ print_string
 
     ADDI R1, 0x01
-    JUMP print_loop
+    JUMP print_string
 
 exit_print:
     RET
 
+poll_char:
+    LOAD R1, 0x10
+    LOAD R2, 0x01
+    LDR R3, R1, R2
+
+    CMPI R3, 0x00
+    JZ poll_char
+
+    LOAD R2, 0x00
+    LDR R0, R1, R2
+    JUMP trap_done
+
+exit:
+    LOAD R0, 0x45           ; print E just to show we exited
+    STORE R0, TERMINAL
+    HALT
 
 priv_fault_string:
     .string "PRIVILEGE FAULT"
@@ -104,6 +119,3 @@ bus_fault_string:
 
 machine_fault_string:
     .string "MACHINE FAULT"
-
-long_string:
-    .string "THIS IS A VERY LONG STRING SO I WONDER WHAT IS GOING TO HAPPEN WILL THIS OVER FLOW OR WHAT WILL HAPPEN BECAUSE IT NEEDS TO BE MORE THAN 256 CHARACTERS TO BREAK OH NO OH NO IS THIS ALREADY ENOUGH I DON KNOW?!???"

@@ -30,7 +30,7 @@ def main():
     else:
         sys.exit("usage: python3 main.py <program_name>")
 
-    machine = Machine(program_path, trace_mode=TRACKING_ENABLED, start_mode=START_MODE, handle_machine_faults=HANDLE_MACHINE_FAULTS)
+    machine = Machine(program_path, trace_mode=TRACKING_ENABLED, start_mode=START_MODE, handle_machine_faults=HANDLE_MACHINE_FAULTS, keyboard_buffer="TESTI\n")
     try:
         machine.cpu.run()
     except DoubleFault as fault:

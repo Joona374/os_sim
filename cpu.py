@@ -58,6 +58,7 @@ class CPU:
             Opcode.JNZ: self._process_jnz,
             Opcode.CMPI: self._process_cmpi,
             Opcode.ADDI: self._process_addi,
+            Opcode.MOV: self._process_mov,
         }
 
     def run(self) -> None:
@@ -366,3 +367,13 @@ class CPU:
 
         self._write_to_register(reg, add_result)
         self.zero_flag = add_result == 0
+
+    def _process_mov(self):
+        target_reg = self._fetch_byte()
+        source_reg = self._fetch_byte()
+
+        self._validate_register(target_reg)
+        self._validate_register(source_reg)
+
+        value = self._read_from_register(source_reg)
+        self._write_to_register(target_reg, value)
