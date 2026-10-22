@@ -1,7 +1,9 @@
 """Host-side tool: assembly source text -> machine code bytes."""
 
+import os
 import re
 import sys
+from typing import NamedTuple
 
 from isa import LAYOUT, NUM_REGISTERS, OPERAND_SIZE, Opcode, Operand
 
@@ -13,8 +15,20 @@ ORIGIN = 0x0000
 class AssemblerError(ValueError):
     """A mistake in the assembly source. A tool error, not a MachineFault."""
 
-    def __init__(self, line_no: int, message: str) -> None:
-        super().__init__(f"line {line_no}: {message}")
+    def __init__(self, line_no: int, message: str, filename: str | None = None) -> None:
+        self.line_no = line_no
+        self.message = message
+        self.filename = filename
+        where = f"line {line_no}" if filename is None else f"{filename}: line {line_no}"
+        super().__init__(f"{where}: {message}")
+
+
+class SourceLine(NamedTuple):
+    """One line of the fully expanded source, remembering where it came from."""
+
+    filename: str | None
+    number: int
+    text: str
 
 
 # Splits a line into tokens. Alternatives are tried in this order at each position.
@@ -158,14 +172,57 @@ def encode_directive(name: str, operands: list[str], symbols: dict[str, int], li
     raise AssemblerError(line_no, f"unknown directive {name.lower()!r}")
 
 
-def assemble(source: str) -> list[bytes]:
-    """Returns one bytes object per instruction or data directive."""
+def expand_includes(
+    source: str,
+    filename: str | None,
+    base_dir: str,
+    stack: tuple[str, ...] = (),
+) -> list[SourceLine]:
+    """Replaces every `.include "file"` line with the contents of that file, recursively.
+
+    This is pure text substitution, done before the assembler proper runs, so the
+    included text lands in the image exactly where the .include line stood. Paths
+    are relative to the directory of the file that contains the .include.
+    `stack` holds the files currently being expanded, to catch circular includes.
+    """
+    expanded: list[SourceLine] = []
+
+    for line_no, raw in enumerate(source.splitlines(), start=1):
+        label, mnemonic, operands = parse_line(raw)
+
+        if mnemonic != ".INCLUDE":
+            expanded.append(SourceLine(filename, line_no, raw))
+            continue
+
+        if label is not None:
+            raise AssemblerError(line_no, "a label can't be on an .include line", filename)
+        if len(operands) != 1 or len(operands[0]) < 2 or operands[0][0] != '"' or operands[0][-1] != '"':
+            raise AssemblerError(line_no, '.include takes exactly one "quoted file name"', filename)
+
+        path = os.path.normpath(os.path.join(base_dir, operands[0][1:-1]))
+        if path in stack:
+            chain = " -> ".join([*stack, path])
+            raise AssemblerError(line_no, f"circular include: {chain}", filename)
+
+        try:
+            with open(path) as f:
+                included_source = f.read()
+        except OSError as err:
+            raise AssemblerError(line_no, f"cannot read include file {path!r}: {err.strerror}", filename) from None
+
+        expanded += expand_includes(included_source, path, os.path.dirname(path), (*stack, path))
+
+    return expanded
+
+
+def _assemble_lines(lines: list[str]) -> list[bytes]:
+    """The two-pass assembler proper. Errors carry the 1-based index into `lines`."""
     # ---- Pass 1: work out where every label lives and what every constant is ----
     symbols: dict[str, int] = {}  # labels and constants share one namespace
     items: list[tuple[int, Opcode | str, list[str]]] = []  # (line number, opcode or directive name, operand texts)
     address = ORIGIN
 
-    for line_no, raw in enumerate(source.splitlines(), start=1):
+    for line_no, raw in enumerate(lines, start=1):
         label, mnemonic, operands = parse_line(raw)
 
         if label is not None:
@@ -212,19 +269,37 @@ def assemble(source: str) -> list[bytes]:
     return encoded
 
 
+def assemble(source: str, filename: str | None = None, base_dir: str = ".") -> list[bytes]:
+    """Returns one bytes object per instruction or data directive.
+
+    `.include "other.asm"` lines are expanded first. `filename` is the name of
+    `source` (used in error messages and for circular-include detection);
+    `base_dir` is where relative include paths are resolved from.
+    """
+    stack = (os.path.normpath(filename),) if filename else ()
+    lines = expand_includes(source, filename, base_dir, stack)
+
+    try:
+        return _assemble_lines([line.text for line in lines])
+    except AssemblerError as err:
+        # Translate "line N of the expanded text" back to "line M of file F".
+        origin = lines[err.line_no - 1]
+        raise AssemblerError(origin.number, err.message, origin.filename) from None
+
+
 def main() -> None:
     if len(sys.argv) == 2:
         src_path, out_path = f"asm/{sys.argv[1]}.asm", f"hex/{sys.argv[1]}.hex"
     elif len(sys.argv) == 3:
         src_path, out_path = f"asm/{sys.argv[1]}.asm", f"hex/{sys.argv[2]}.hex"
-    else:  
+    else:
         sys.exit("usage: python assembler.py <in_and_out_filename> OR python assembler.py <input> <output>")
 
     with open(src_path) as f:
         try:
-            instructions = assemble(f.read())
+            instructions = assemble(f.read(), filename=src_path, base_dir=os.path.dirname(src_path))
         except AssemblerError as err:
-            sys.exit(f"{src_path}: {err}")
+            sys.exit(str(err))
 
     with open(out_path, "w") as f:
         for instruction in instructions:  # one instruction or data item per line, easy to eyeball

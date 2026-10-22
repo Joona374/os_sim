@@ -21,9 +21,6 @@ boot:
     PUSH R2
     RETI
 
-main:
-    <TODO>
-
 syscall:
     PUSH R1
     PUSH R2
