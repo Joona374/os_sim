@@ -117,6 +117,52 @@ def test_new_instruction_invalid_register_fault_is_side_effect_free(opcode: Opco
     assert cpu.PC == 0
     assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
     assert cpu.regs == registers
+@pytest.mark.parametrize("zero_flag", [False, True], ids=["clear", "set"])
+def test_mov_copies_register_without_changing_source_or_zero_flag(zero_flag: bool) -> None:
+    cpu, _ = build_machine(bytes([Opcode.MOV.value, 0, 1]))
+    cpu.regs = [0x11, 0xA5, 0x33, 0x44]
+    cpu.zero_flag = zero_flag
+
+    cpu.step()
+
+    assert cpu.regs == [0xA5, 0xA5, 0x33, 0x44]
+    assert cpu.zero_flag is zero_flag
+    assert cpu.PC == 3
+
+
+def test_mov_same_register_is_valid_and_cmp_branch_flag_survives_mov() -> None:
+    program = bytes(
+        [0x02, 0, 7, 0x02, 1, 7, 0x05, 0, 1, Opcode.MOV.value, 2, 2,
+         0x06, 0, 18, 0x02, 3, 0xEE, 0x01]
+    )
+    cpu = run_program(program)
+
+    assert cpu.regs == [7, 7, 0, 0]
+    assert cpu.zero_flag is True
+
+
+@pytest.mark.parametrize(
+    ("destination", "source"),
+    [(0, 4), (4, 0)],
+    ids=["invalid-source", "valid-source-invalid-destination"],
+)
+def test_mov_invalid_register_fault_is_side_effect_free(destination: int, source: int) -> None:
+    cpu, _ = build_machine(bytes([Opcode.MOV.value, destination, source]))
+    cpu.regs = [0x11, 0x22, 0x33, 0x44]
+    cpu.zero_flag = True
+    cpu.SP -= 2
+    registers = cpu.regs.copy()
+    memory = [cpu.bus.read(address) for address in range(0x0400, 0x0800)]
+    initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())
+
+    with pytest.raises(InvalidCpuRegister):
+        cpu.step()
+
+    assert cpu.PC == 0
+    assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
+    assert [cpu.bus.read(address) for address in range(0x0400, 0x0800)] == memory
+
+
     assert [cpu.bus.read(address) for address in range(0x0400, 0x0800)] == memory
 
 

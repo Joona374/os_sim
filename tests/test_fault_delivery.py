@@ -49,11 +49,13 @@ def test_machine_fault_handling_defaults_to_disabled() -> None:
         (bytes([Opcode.LOAD.value, 7, 1]), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
         (bytes([Opcode.CMPI.value, 7, 1]), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
         (bytes([Opcode.ADDI.value, 7, 1]), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
+        (bytes([Opcode.MOV.value, 4, 0]), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
         (assembled("POP R0"), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
     ],
     ids=[
         "user-halt", "user-reti", "user-device-store", "unmapped-store", "rom-store",
-        "illegal-opcode", "invalid-load-register", "invalid-cmpi-register", "invalid-addi-register", "empty-pop",
+        "illegal-opcode", "invalid-load-register", "invalid-cmpi-register", "invalid-addi-register",
+        "invalid-mov-destination", "empty-pop",
     ],
 )
 def test_machine_fault_is_delivered_to_its_vector(
@@ -313,9 +315,7 @@ def test_rom_kernel_prints_fault_message_and_halts(
 ) -> None:
     kernel_path = Path(__file__).resolve().parents[1] / "asm" / "kernel.asm"
     source = kernel_path.read_text()
-    main_start = source.index("main:\n") + len("main:\n")
-    syscall_start = source.index("\nsyscall:\n", main_start)
-    source = source[:main_start] + snippet + source[syscall_start:]
+    source += "\nmain:\n" + snippet
     source = source.replace(
         "LOAD R2, 1\n    PUSH R2",
         f"LOAD R2, {initial_flags}\n    PUSH R2",
@@ -361,6 +361,7 @@ def test_main_parses_and_removes_flags(tmp_path: Path, monkeypatch: pytest.Monke
             trace_mode: bool,
             start_mode: CpuMode,
             handle_machine_faults: bool,
+            keyboard_buffer: bytearray | bytes | str | None = None,
         ) -> None:
             captured.update(
                 path=path,

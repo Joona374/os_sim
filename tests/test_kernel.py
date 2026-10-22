@@ -11,11 +11,7 @@ KERNEL_PATH = Path(__file__).resolve().parents[1] / "asm" / "kernel.asm"
 
 
 def kernel_source(main_body: str, initial_flags: int = 1) -> str:
-    source = KERNEL_PATH.read_text()
-    before_main, marker, remainder = source.partition("main:\n")
-    _, syscall_marker, after_main = remainder.partition("\nsyscall:\n")
-    assert marker and syscall_marker
-    source = before_main + marker + main_body + syscall_marker + after_main
+    source = KERNEL_PATH.read_text() + "\nmain:\n" + main_body
     return source.replace(
         "LOAD R2, 1\n    PUSH R2",
         f"LOAD R2, {initial_flags}\n    PUSH R2",
@@ -52,11 +48,37 @@ def build_kernel(
     main_body: str,
     message: str | None = None,
     message_address: int | None = None,
+    keyboard_buffer: bytearray | bytes | str | None = None,
 ) -> tuple[Machine, bytes]:
     image = assemble_kernel(main_body, message, message_address)
     image_path = tmp_path / "kernel_test.hex"
     image_path.write_text(image.hex(" "))
-    return Machine(str(image_path), handle_machine_faults=True), image
+    return Machine(
+        str(image_path), handle_machine_faults=True, keyboard_buffer=keyboard_buffer
+    ), image
+
+
+def build_printer(tmp_path: Path, keyboard_buffer: bytes | str) -> Machine:
+    source_path = Path(__file__).resolve().parents[1] / "asm" / "printer.asm"
+    image = b"".join(
+        assemble(
+            source_path.read_text(),
+            filename=str(source_path),
+            base_dir=str(source_path.parent),
+        )
+    )
+    image_path = tmp_path / "printer_test.hex"
+    image_path.write_text(image.hex(" "))
+    return Machine(str(image_path), handle_machine_faults=True, keyboard_buffer=keyboard_buffer)
+
+
+def assert_cpu_is_polling(cpu, steps: int = 2000) -> None:
+    pcs = []
+    for _ in range(steps):
+        pcs.append(cpu.PC)
+        cpu.step()
+    assert cpu.halted is False
+    assert pcs[-5:] == pcs[-10:-5]
 
 
 def run_until_syscall_returns(machine: Machine, returns: int = 1) -> None:
@@ -200,6 +222,105 @@ def test_kernel_print_r1_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixt
 
     assert capsys.readouterr().out == "Q"
     assert machine.cpu.regs == [0, ord("Q"), 1, 0]
+
+
+@pytest.mark.parametrize("zero_flag", [False, True], ids=["clear", "set"])
+def test_kernel_read_char_returns_key_and_preserves_state(
+    tmp_path: Path, zero_flag: bool
+) -> None:
+    comparison = "CMP R1, R1" if zero_flag else "CMP R1, R2"
+    body = (
+        "LOAD R1, 0x11\nLOAD R2, 0x22\nLOAD R3, 0x33\n"
+        + comparison
+        + "\nLOAD R0, SYS_READ_CHAR\nSYSCALL"
+    )
+    machine, _ = build_kernel(tmp_path, body, keyboard_buffer=b"K")
+
+    run_until_syscall_returns(machine)
+
+    assert machine.cpu.regs == [ord("K"), 0x11, 0x22, 0x33]
+    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.zero_flag is zero_flag
+
+
+def test_kernel_read_char_returns_queued_keys_in_order(tmp_path: Path) -> None:
+    body = "LOAD R1, 0x11\nLOAD R2, 0x22\nLOAD R3, 0x33\nCMP R1, R1\n"
+    body += "LOAD R0, SYS_READ_CHAR\nSYSCALL\nLOAD R0, SYS_READ_CHAR\nSYSCALL"
+    machine, _ = build_kernel(tmp_path, body, keyboard_buffer=b"AB")
+
+    run_until_syscall_returns(machine, returns=2)
+
+    assert machine.cpu.regs == [ord("B"), 0x11, 0x22, 0x33]
+    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.zero_flag is True
+
+
+def test_kernel_read_char_returns_queued_nul(tmp_path: Path) -> None:
+    machine, _ = build_kernel(
+        tmp_path, "LOAD R0, SYS_READ_CHAR\nSYSCALL", keyboard_buffer=b"\x00"
+    )
+
+    run_until_syscall_returns(machine)
+
+    assert machine.cpu.regs[0] == 0
+    assert machine.cpu.SP == 0x0800
+
+
+def test_kernel_read_char_with_empty_queue_keeps_polling(tmp_path: Path) -> None:
+    machine, _ = build_kernel(tmp_path, "LOAD R0, SYS_READ_CHAR\nSYSCALL")
+
+    assert_cpu_is_polling(machine.cpu)
+
+
+def test_printer_echoes_keys_through_newline_then_exits(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    machine = build_printer(tmp_path, "hi\n")
+
+    machine.cpu.run()
+
+    # The kernel's E exit marker is temporary.
+    assert capsys.readouterr().out == "hi\nE"
+    assert machine.cpu.halted is True
+
+
+def test_printer_echo_does_not_treat_nul_as_empty_input(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    machine = build_printer(tmp_path, b"\x00\n")
+
+    machine.cpu.run()
+
+    # The kernel's E exit marker is temporary.
+    assert capsys.readouterr().out == "\x00\nE"
+    assert machine.cpu.halted is True
+
+
+def test_printer_without_newline_echoes_then_keeps_polling(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    machine = build_printer(tmp_path, "hi")
+
+    assert_cpu_is_polling(machine.cpu)
+
+    assert capsys.readouterr().out == "hi"
+
+
+def test_user_keyboard_read_faults_without_consuming_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    machine, _ = build_kernel(
+        tmp_path,
+        "LOAD R0, 0x10\nLOAD R1, 0\nLDR R2, R0, R1",
+        keyboard_buffer=b"K",
+    )
+
+    machine.cpu.run()
+
+    assert "PRIVILEGE FAULT" in capsys.readouterr().out
+    assert machine.cpu.halted is True
+    assert machine.keyboard.read(1) == 1
+    assert machine.keyboard.read(0) == ord("K")
 
 
 def test_kernel_exit_halts_and_prints_temporary_debug_marker(

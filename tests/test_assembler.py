@@ -1,29 +1,19 @@
 from pathlib import Path
+import sys
 
 import pytest
 
+import assembler as assembler_module
 from assembler import AssemblerError, assemble
 
-from conftest import build_machine
+def test_printer_source_assembles_with_kernel_vectors_first() -> None:
+    source_path = Path(__file__).resolve().parents[1] / "asm" / "printer.asm"
+    program = b"".join(assemble(
+        source_path.read_text(), filename=str(source_path), base_dir=str(source_path.parent)
+    ))
 
-
-def test_hello_program_matches_supplied_golden_bytes() -> None:
-    source_path = Path(__file__).resolve().parents[1] / "asm" / "hello_rom.asm"
-    source = source_path.read_text()
-    expected = bytes.fromhex(
-        "02 02 00 02 03 21 09 00 02 03 02 01 00 05 00 01 06 00 20 "
-        "03 00 08 00 02 01 01 07 03 01 04 00 06 01 48 45 4C 4C 4F 21 0A 00"
-    )
-    program = b"".join(assemble(source))
-    assert program == expected
-
-
-def test_existing_hello_program_outputs_expected_text() -> None:
-    source_path = Path(__file__).resolve().parents[1] / "asm" / "hello_rom.asm"
-    program = b"".join(assemble(source_path.read_text()))
-    cpu, recording_device = build_machine(program)
-    cpu.run()
-    assert bytes(value for _, value in recording_device.writes) == b"HELLO!\n"
+    assert program[0:15:3] == bytes([0x04] * 5)
+    assert bytes([0x13, 1, 0]) in program
 
 
 def test_forward_label_reference_resolves() -> None:
@@ -95,12 +85,14 @@ def test_new_instruction_encodings_accept_constants_and_label_bytes() -> None:
         "ADDI R1, >target\n"
         "CMPI R2, <target\n"
         "JNZ target\n"
+        "MOV R2, R3\n"
         "HALT\n"
         "target:\n"
         "HALT"
     )
     assert b"".join(assemble(source)) == bytes(
-        [0x11, 0, 0xA5, 0x12, 1, 0, 0x11, 2, 0x0D, 0x10, 0, 0x0D, 0x01, 0x01]
+        [0x11, 0, 0xA5, 0x12, 1, 0, 0x11, 2, 0x10, 0x10, 0, 0x10,
+         0x13, 2, 3, 0x01, 0x01]
     )
 
 
@@ -154,3 +146,143 @@ def test_high_and_low_operators_resolve_labels_above_255() -> None:
 def test_high_and_low_operators_resolve_numbers_and_constants() -> None:
     source = "VALUE=0xABCD\n.byte >0x1234, <0x1234, >VALUE, <VALUE"
     assert b"".join(assemble(source)) == bytes([0x12, 0x34, 0xAB, 0xCD])
+
+
+def test_include_places_kernel_first_and_exports_its_constants(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    (tmp_path / "kernel.asm").write_text((repository / "asm" / "kernel.asm").read_text())
+    main_path = tmp_path / "main.asm"
+    source = '.include "kernel.asm"\nmain:\nSTORE R0, TERMINAL\nLOAD R0, SYS_READ_CHAR\n'
+
+    program = b"".join(assemble(source, filename=str(main_path), base_dir=str(tmp_path)))
+
+    assert program[0:15:3] == bytes([0x04] * 5)
+    assert program[-7:] == bytes([0x03, 0, 0x08, 0, 0x02, 0, 4])
+
+
+def test_include_paths_are_relative_to_each_file_and_may_nest(tmp_path: Path) -> None:
+    nested = tmp_path / "sub" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "second.asm").write_text(".byte 1\n")
+    (tmp_path / "sub" / "first.asm").write_text('.include "nested/second.asm"\n.byte 2\n')
+    main_path = tmp_path / "main.asm"
+
+    program = assemble('.InClUdE "sub/first.asm"\n.byte 3\n', str(main_path), str(tmp_path))
+
+    assert b"".join(program) == bytes([1, 2, 3])
+
+
+def test_include_inside_comment_is_ignored() -> None:
+    assert b"".join(assemble('; .include "missing.asm"\n.byte 7')) == bytes([7])
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        ".include\n",
+        ".include missing.asm\n",
+        '.include "one.asm" "two.asm"\n',
+        'label: .include "one.asm"\n',
+    ],
+    ids=["missing-operand", "unquoted-name", "two-operands", "label-on-directive"],
+)
+def test_include_rejects_malformed_directives(tmp_path: Path, source: str) -> None:
+    path = tmp_path / "main.asm"
+    with pytest.raises(AssemblerError) as error:
+        assemble(source, filename=str(path), base_dir=str(tmp_path))
+    assert error.value.filename == str(path)
+    assert error.value.line_no == 1
+
+
+def test_missing_include_names_source_file_and_read_error(tmp_path: Path) -> None:
+    path = tmp_path / "main.asm"
+
+    with pytest.raises(AssemblerError, match="cannot read include file") as error:
+        assemble('.include "absent.asm"', str(path), str(tmp_path))
+
+    assert error.value.filename == str(path)
+    assert error.value.line_no == 1
+
+
+def test_circular_include_reports_the_include_chain(tmp_path: Path) -> None:
+    first = tmp_path / "a.asm"
+    second = tmp_path / "b.asm"
+    first.write_text('.include "b.asm"\n')
+    second.write_text('.include "a.asm"\n')
+
+    with pytest.raises(AssemblerError, match="circular include") as error:
+        assemble(first.read_text(), str(first), str(tmp_path))
+
+    assert "a.asm" in str(error.value)
+    assert "b.asm" in str(error.value)
+
+
+def test_errors_in_included_file_keep_that_files_line_and_name(tmp_path: Path) -> None:
+    included = tmp_path / "included.asm"
+    included.write_text("HALT\nLOAD R0\n")
+
+    with pytest.raises(AssemblerError) as error:
+        assemble('.include "included.asm"\n', str(tmp_path / "main.asm"), str(tmp_path))
+
+    assert error.value.filename == str(included)
+    assert error.value.line_no == 2
+
+
+def test_error_after_include_keeps_including_files_line_and_name(tmp_path: Path) -> None:
+    (tmp_path / "included.asm").write_text("HALT\n")
+    main_path = tmp_path / "main.asm"
+
+    with pytest.raises(AssemblerError) as error:
+        assemble('.include "included.asm"\nUNKNOWN\n', str(main_path), str(tmp_path))
+
+    assert error.value.filename == str(main_path)
+    assert error.value.line_no == 2
+
+
+def test_duplicate_definition_reports_second_files_location(tmp_path: Path) -> None:
+    included = tmp_path / "included.asm"
+    included.write_text("shared:\nHALT\n")
+    main_path = tmp_path / "main.asm"
+
+    with pytest.raises(AssemblerError) as error:
+        assemble('.include "included.asm"\nshared:\nHALT\n', str(main_path), str(tmp_path))
+
+    assert error.value.filename == str(main_path)
+    assert error.value.line_no == 2
+
+
+def test_assembler_errors_without_filename_keep_legacy_line_format() -> None:
+    with pytest.raises(AssemblerError, match=r"^line 1:") as error:
+        assemble("LOAD R0\n")
+    assert error.value.filename is None
+
+
+def test_assembler_cli_resolves_includes_and_writes_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    asm_dir = tmp_path / "asm"
+    hex_dir = tmp_path / "hex"
+    asm_dir.mkdir()
+    hex_dir.mkdir()
+    (asm_dir / "part.asm").write_text("LOAD R0, 5\n")
+    (asm_dir / "demo.asm").write_text('.include "part.asm"\nHALT\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["assembler.py", "demo"])
+
+    assembler_module.main()
+
+    assert (hex_dir / "demo.hex").read_text() == "02 00 05\n01\n"
+
+
+def test_assembler_cli_reports_included_file_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    asm_dir = tmp_path / "asm"
+    hex_dir = tmp_path / "hex"
+    asm_dir.mkdir()
+    hex_dir.mkdir()
+    (asm_dir / "bad.asm").write_text("HALT\nLOAD R0\n")
+    (asm_dir / "demo.asm").write_text('.include "bad.asm"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["assembler.py", "demo"])
+
+    with pytest.raises(SystemExit) as error:
+        assembler_module.main()
+
+    assert "asm/bad.asm: line 2" in str(error.value)

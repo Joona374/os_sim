@@ -10,7 +10,7 @@ This describes the behavior implemented by the CPU and assembler. Programs are a
 | `PC` | 16-bit program counter, starts at `0x0000` |
 | `SP` | 16-bit stack pointer, starts at `0x0800` |
 | Mode | Starts in kernel mode unless `start_mode` selects user mode. |
-| Zero flag (`Z`) | Starts clear. `CMP`/`CMPI` set it for equal values; `ADD`/`ADDI`/`SUB` set it when the 8-bit result is zero. Trap frames save and restore it. |
+| Zero flag (`Z`) | Starts clear. `CMP`/`CMPI` set it for equal values; `ADD`/`ADDI`/`SUB` set it when the 8-bit result is zero. `MOV` leaves it unchanged. Trap frames save and restore it. |
 | Word byte order | Big-endian: high byte first, then low byte |
 
 Default address map:
@@ -20,7 +20,10 @@ Default address map:
 | `0x0000`–`0x03FF` | 1 KiB ROM | Program image, zero-padded; writes fault |
 | `0x0400`–`0x07FF` | 1 KiB RAM | Read/write memory; stack is placed here |
 | `0x0800`–`0x0BFF` | 1 KiB terminal device | Writes print a character; reads return `0x00` |
+| `0x1000`–`0x13FF` | 1 KiB keyboard device | Kernel-only; data and status registers are at offsets `0` and `1` |
 | Everything else | Unmapped | Access faults |
+
+The terminal prints a character when offset `0` is written; reads return `0x00`. The keyboard is kernel-only, like every address at or above `0x0800`. Its data register is at offset `0`, and its status register is at offset `1` (`1` means a byte is waiting, `0` means the queue is empty). Reading data consumes that byte and loads the next queued byte, if any; an empty data read returns `0`. A queued `0x00` is a real byte and can be distinguished from an empty queue only by checking status first. Writes are ignored, and reads of other keyboard offsets return `0`.
 
 The stack grows down from `SP = 0x0800`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x0800` is a valid empty-stack boundary, not a RAM byte. Stack bytes occupy `0x0400`–`0x07FF`.
 
@@ -49,6 +52,9 @@ The CPU starts at `PC = 0x0000`. ROM begins with five three-byte absolute `JUMP`
 - `>value` selects the high byte and `<value` the low byte of a 16-bit value. They work with numbers, labels, and constants; the input must be in `0..65535`.
 - `.byte value, ...` emits one byte per value and requires at least one value.
 - `.string "text"` emits the string followed by a zero byte (`0x00`).
+- `.include "file"` inserts the named source file at that exact point before assembly. Paths are relative to the file containing the directive; includes may nest. A circular include is an error. When `assemble` is given a filename, include errors identify the file and line where the problem occurred; without a filename, errors retain the `line N:` form.
+
+The image layout is simply text in order. Including a kernel first therefore places its vector table at address `0x0000`.
 
 Directives place data directly in the image; the CPU does not skip it. Put data after a `HALT` or elsewhere execution cannot reach, or the CPU may interpret data as instructions.
 
@@ -76,6 +82,7 @@ Sizes include the opcode byte. `Z` is the only flag.
 | `JNZ` | `10` | addr16 | 3 | — | No | Jump if `Z` is clear. |
 | `CMPI` | `11` | register, imm8 | 3 | `Z` | No | Set `Z` if the register equals the immediate byte. |
 | `ADDI` | `12` | register, imm8 | 3 | `Z` | No | Add the immediate byte modulo 256 and set `Z` if the result is zero. |
+| `MOV` | `13` | register, register | 3 | — | No | Copy the source register into the destination without changing `Z`. |
 
 For `STORE`, `JUMP`, `JZ`, `JNZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` forms its address as `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
 
@@ -134,6 +141,12 @@ Example: `CMPI R0, 0x2A` → `11 00 2A`
 Layout: opcode, destination/source register, immediate byte.
 
 Example: `ADDI R0, 1` → `12 00 01`
+
+### `MOV`
+
+Layout: opcode, destination register, source register.
+
+Example: `MOV R1, R0` → `13 01 00`
 
 ### `ADD`
 
@@ -223,7 +236,7 @@ Stack faults from `RETI` leave the frame, `SP`, mode, flags, and registers uncha
 ## 5. Conventions (Not Enforced)
 
 - The kernel's `print_string` routine takes a zero-terminated string pointer in `R1:R2` (`R1` high byte, `R2` low byte). It clobbers `R0`, advances `R1` and `R2`, and leaves `R3` untouched; when `R2` wraps to zero, it increments `R1`. This is a software convention, not an ISA rule.
-- `asm/hello_rom.asm` uses a different convention: its pointer is in `R2:R3` (`R2` high byte, `R3` low byte), and its loop increments only `R3`. That sample loop does not handle strings crossing a 256-byte boundary.
+- `asm/printer.asm` is the current echo sample and includes the kernel. The former `asm/hello_rom.asm` sample is not present in the current source tree, so there is no current sample using the older `R2:R3` pointer convention.
 - A routine must restore the stack to its entry position before `RET`. `RET` always consumes exactly two bytes; an unbalanced push/pop sequence makes it read the wrong return address.
 
 ## 6. Worked Examples
@@ -266,36 +279,25 @@ The program prints `HELLO!` followed by a newline. `msg` is at `0x0021`. This in
 
 ### Walk a pointer across a 256-byte boundary
 
-The kernel's pointer-walking loop uses `ADDI` on the low byte followed immediately by `JNZ`. When the low byte wraps, `ADDI` sets `Z`; `JNZ` then falls through to increment the high byte. No instruction may change `Z` between those two instructions.
+This increments the pointer `R1:R2` from `0x04FF` to `0x0500`. `ADDI` sets `Z` when the low byte wraps; the immediately following `JNZ` falls through, so the high byte is incremented. `MOV` leaves `Z` unchanged and is safe between a flag-setting instruction and its conditional branch, but the wrap check keeps `JNZ` directly after `ADDI`.
 
 ```asm
-TERMINAL = 0x0800
-LOAD R1, >msg
-LOAD R2, <msg
-loop:
-    LDR R0, R1, R2
-    CMPI R0, 0
-    JZ done
-    STORE R0, TERMINAL
-    ADDI R2, 1
-    JNZ loop
-    ADDI R1, 1
-    JUMP loop
+LOAD R1, 0x04
+LOAD R2, 0xFF
+ADDI R2, 1
+JNZ done
+ADDI R1, 1
 done:
     HALT
-msg:
-    .string "A"
 ```
 
 Assembler output by statement:
 
 ```text
-02 01 00 | 02 02 21 | 09 00 01 02 | 11 00 00 | 06 00 20
-03 00 08 00 | 12 02 01 | 10 00 06 | 12 01 01 | 04 00 06 | 01
-41 00
+02 01 04 | 02 02 FF | 12 02 01 | 10 00 0F | 12 01 01 | 01
 ```
 
-Here `msg` is at `0x0021`; the same loop continues correctly when the string crosses a page boundary.
+After `HALT`, the pointer registers contain `R1 = 0x05` and `R2 = 0x00`. `Z` is set because `ADDI` produced zero.
 
 ### Call a subroutine twice
 
@@ -333,7 +335,7 @@ This prints `AB`; `emit` is at `0x000D`.
 - There is no automatic kernel/handler installation: the program image must provide its vector and any boot code needed to enter user mode.
 - Trap frames use the same RAM stack as `PUSH`/`CALL`; nested traps consume another three bytes each.
 - No instruction reads `SP`, so a handler cannot locate the saved `PC` relative to the current stack pointer using only the ISA. User stack overflow can prevent delivery of the resulting stack fault and cause a `DoubleFault`.
-- `Terminal.read` returns `0x00`.
+- Terminal reads return `0x00`; writes at offset `0` print a character. Reading the keyboard data register consumes the waiting byte and advances the queue; check the status register to distinguish a queued `0x00` from an empty queue.
 
 ## 8. Adding an Instruction
 
