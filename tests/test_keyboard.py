@@ -6,7 +6,9 @@ from assembler import assemble
 from device import Keyboard, Terminal
 from exceptions import BusFaultUnmappedAddress, PrivilegedMemoryAccessViolation
 from machine import Machine
+from memmap import KEYBOARD_START
 from tps import CpuMode
+from conftest import CANONICAL_UNMAPPED_ADDRESS
 
 
 def assembled(source: str) -> bytes:
@@ -71,7 +73,7 @@ def test_keyboard_copies_caller_buffer_for_each_instance() -> None:
 def test_machine_forwards_keyboard_buffer_to_cpu_reads(tmp_path: Path) -> None:
     program = assembled("LDR R2, R0, R1\nLDR R3, R0, R1\nLDR R2, R0, R1")
     machine = build_machine(tmp_path, program, bytearray(b"Q"))
-    machine.cpu.regs[:2] = [0x10, 1]
+    machine.cpu.regs[:2] = [KEYBOARD_START >> 8, 1]
 
     machine.cpu.step()
     assert machine.cpu.regs[2] == 1
@@ -97,7 +99,7 @@ def test_user_cpu_cannot_read_keyboard(tmp_path: Path, offset: int) -> None:
         b"K",
         start_mode=CpuMode.USER,
     )
-    machine.cpu.regs[:2] = [0x10, offset]
+    machine.cpu.regs[:2] = [KEYBOARD_START >> 8, offset]
 
     with pytest.raises(PrivilegedMemoryAccessViolation):
         machine.cpu.step()
@@ -107,9 +109,9 @@ def test_user_cpu_cannot_read_keyboard(tmp_path: Path, offset: int) -> None:
     assert machine.keyboard.read(0) == ord("K")
 
 
-@pytest.mark.parametrize("address", [0x0C00, 0x1400])
-def test_machine_unmapped_addresses_around_keyboard_fault(tmp_path: Path, address: int) -> None:
+def test_machine_unmapped_address_in_gap_faults(tmp_path: Path) -> None:
     machine = build_machine(tmp_path, assembled("LDR R2, R0, R1"))
+    address = CANONICAL_UNMAPPED_ADDRESS
     machine.cpu.regs[:2] = [address >> 8, address & 0xFF]
 
     with pytest.raises(BusFaultUnmappedAddress):

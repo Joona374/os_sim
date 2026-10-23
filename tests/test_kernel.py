@@ -1,11 +1,13 @@
 from pathlib import Path
+import re
 
 import pytest
 
 from assembler import assemble
+from memmap import KEYBOARD_START, RAM_END, TERMINAL_START
 from machine import Machine
 from tps import CpuMode
-
+from conftest import CANONICAL_UNMAPPED_ADDRESS
 
 KERNEL_PATH = Path(__file__).resolve().parents[1] / "asm" / "kernel.asm"
 
@@ -53,9 +55,7 @@ def build_kernel(
     image = assemble_kernel(main_body, message, message_address)
     image_path = tmp_path / "kernel_test.hex"
     image_path.write_text(image.hex(" "))
-    return Machine(
-        str(image_path), handle_machine_faults=True, keyboard_buffer=keyboard_buffer
-    ), image
+    return Machine(str(image_path), handle_machine_faults=True, keyboard_buffer=keyboard_buffer), image
 
 
 def build_printer(tmp_path: Path, keyboard_buffer: bytes | str) -> Machine:
@@ -118,9 +118,7 @@ def print_string_main(calls: int = 1, zero_flag: bool | None = None) -> str:
     return "\n".join(lines)
 
 
-def test_kernel_print_string_short_empty_and_preserves_user_state(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_kernel_print_string_short_empty_and_preserves_user_state(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine, image = build_kernel(tmp_path, print_string_main(), "hello")
 
     run_until_syscall_returns(machine)
@@ -128,25 +126,21 @@ def test_kernel_print_string_short_empty_and_preserves_user_state(
     assert capsys.readouterr().out == "hello"
     message_address = image.index(b"hello\x00")
     assert machine.cpu.regs == [0, message_address >> 8, message_address & 0xFF, 0xA5]
-    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.SP == RAM_END
 
 
-def test_kernel_print_string_empty_returns_zero_without_output(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_kernel_print_string_empty_returns_zero_without_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine, _ = build_kernel(tmp_path, print_string_main(), "")
 
     run_until_syscall_returns(machine)
 
     assert capsys.readouterr().out == ""
     assert machine.cpu.regs[0] == 0
-    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.SP == RAM_END
 
 
 @pytest.mark.parametrize("length", [300, 520], ids=["crosses-one-boundary", "crosses-two-boundaries"])
-def test_kernel_print_string_walks_across_boundaries(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], length: int
-) -> None:
+def test_kernel_print_string_walks_across_boundaries(tmp_path: Path, capsys: pytest.CaptureFixture[str], length: int) -> None:
     text = "A" * length
     machine, _ = build_kernel(tmp_path, print_string_main(), text)
 
@@ -189,9 +183,7 @@ def test_kernel_print_string_boundary_edges_are_at_expected_addresses(
 
 
 @pytest.mark.parametrize("zero_flag", [False, True], ids=["zero-clear", "zero-set"])
-def test_kernel_syscall_preserves_zero_flag(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], zero_flag: bool
-) -> None:
+def test_kernel_syscall_preserves_zero_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str], zero_flag: bool) -> None:
     machine, _ = build_kernel(tmp_path, print_string_main(zero_flag=zero_flag), "x")
 
     run_until_syscall_returns(machine)
@@ -200,16 +192,14 @@ def test_kernel_syscall_preserves_zero_flag(
     assert machine.cpu.zero_flag is zero_flag
 
 
-def test_kernel_prints_string_twice_after_reloading_only_r0(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_kernel_prints_string_twice_after_reloading_only_r0(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine, _ = build_kernel(tmp_path, print_string_main(calls=2), "twice")
 
     run_until_syscall_returns(machine, returns=2)
 
     assert capsys.readouterr().out == "twicetwice"
     assert machine.cpu.regs[0] == 0
-    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.SP == RAM_END
 
 
 def test_kernel_print_r1_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -225,21 +215,15 @@ def test_kernel_print_r1_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixt
 
 
 @pytest.mark.parametrize("zero_flag", [False, True], ids=["clear", "set"])
-def test_kernel_read_char_returns_key_and_preserves_state(
-    tmp_path: Path, zero_flag: bool
-) -> None:
+def test_kernel_read_char_returns_key_and_preserves_state(tmp_path: Path, zero_flag: bool) -> None:
     comparison = "CMP R1, R1" if zero_flag else "CMP R1, R2"
-    body = (
-        "LOAD R1, 0x11\nLOAD R2, 0x22\nLOAD R3, 0x33\n"
-        + comparison
-        + "\nLOAD R0, SYS_READ_CHAR\nSYSCALL"
-    )
+    body = "LOAD R1, 0x11\nLOAD R2, 0x22\nLOAD R3, 0x33\n" + comparison + "\nLOAD R0, SYS_READ_CHAR\nSYSCALL"
     machine, _ = build_kernel(tmp_path, body, keyboard_buffer=b"K")
 
     run_until_syscall_returns(machine)
 
     assert machine.cpu.regs == [ord("K"), 0x11, 0x22, 0x33]
-    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.SP == RAM_END
     assert machine.cpu.zero_flag is zero_flag
 
 
@@ -251,19 +235,17 @@ def test_kernel_read_char_returns_queued_keys_in_order(tmp_path: Path) -> None:
     run_until_syscall_returns(machine, returns=2)
 
     assert machine.cpu.regs == [ord("B"), 0x11, 0x22, 0x33]
-    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.SP == RAM_END
     assert machine.cpu.zero_flag is True
 
 
 def test_kernel_read_char_returns_queued_nul(tmp_path: Path) -> None:
-    machine, _ = build_kernel(
-        tmp_path, "LOAD R0, SYS_READ_CHAR\nSYSCALL", keyboard_buffer=b"\x00"
-    )
+    machine, _ = build_kernel(tmp_path, "LOAD R0, SYS_READ_CHAR\nSYSCALL", keyboard_buffer=b"\x00")
 
     run_until_syscall_returns(machine)
 
     assert machine.cpu.regs[0] == 0
-    assert machine.cpu.SP == 0x0800
+    assert machine.cpu.SP == RAM_END
 
 
 def test_kernel_read_char_with_empty_queue_keeps_polling(tmp_path: Path) -> None:
@@ -272,9 +254,7 @@ def test_kernel_read_char_with_empty_queue_keeps_polling(tmp_path: Path) -> None
     assert_cpu_is_polling(machine.cpu)
 
 
-def test_printer_echoes_keys_through_newline_then_exits(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_printer_echoes_keys_through_newline_then_exits(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine = build_printer(tmp_path, "hi\n")
 
     machine.cpu.run()
@@ -284,9 +264,7 @@ def test_printer_echoes_keys_through_newline_then_exits(
     assert machine.cpu.halted is True
 
 
-def test_printer_echo_does_not_treat_nul_as_empty_input(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_printer_echo_does_not_treat_nul_as_empty_input(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine = build_printer(tmp_path, b"\x00\n")
 
     machine.cpu.run()
@@ -296,9 +274,7 @@ def test_printer_echo_does_not_treat_nul_as_empty_input(
     assert machine.cpu.halted is True
 
 
-def test_printer_without_newline_echoes_then_keeps_polling(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_printer_without_newline_echoes_then_keeps_polling(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine = build_printer(tmp_path, "hi")
 
     assert_cpu_is_polling(machine.cpu)
@@ -306,12 +282,10 @@ def test_printer_without_newline_echoes_then_keeps_polling(
     assert capsys.readouterr().out == "hi"
 
 
-def test_user_keyboard_read_faults_without_consuming_key(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_user_keyboard_read_faults_without_consuming_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine, _ = build_kernel(
         tmp_path,
-        "LOAD R0, 0x10\nLOAD R1, 0\nLDR R2, R0, R1",
+        f"LOAD R0, {KEYBOARD_START >> 8}\nLOAD R1, {KEYBOARD_START & 0xFF}\nLDR R2, R0, R1",
         keyboard_buffer=b"K",
     )
 
@@ -354,12 +328,11 @@ def test_hostile_string_pointer_faults_in_kernel_and_halts(
 ) -> None:
     machine, _ = build_kernel(
         tmp_path,
-        "LOAD R1, 0x0C\nLOAD R2, 0\nLOAD R0, SYS_PRINT_STRING\nSYSCALL",
+        f"LOAD R1, {CANONICAL_UNMAPPED_ADDRESS >> 8}\n" f"LOAD R2, {CANONICAL_UNMAPPED_ADDRESS & 0xFF}\n" "LOAD R0, SYS_PRINT_STRING\nSYSCALL",
     )
 
     machine.cpu.run()
 
-    # Roadmap step 5 is expected to change the current kernel-mode bus-fault behavior.
     assert "BUS FAULT" in capsys.readouterr().out
     assert machine.cpu.halted is True
 
@@ -369,10 +342,33 @@ def test_terminal_pointer_reads_zero_and_prints_nothing(
 ) -> None:
     machine, _ = build_kernel(
         tmp_path,
-        "LOAD R1, 0x08\nLOAD R2, 0\nLOAD R0, SYS_PRINT_STRING\nSYSCALL",
+        f"LOAD R1, {TERMINAL_START >> 8}\nLOAD R2, {TERMINAL_START & 0xFF}\n" "LOAD R0, SYS_PRINT_STRING\nSYSCALL",
     )
 
     run_until_syscall_returns(machine)
 
     assert capsys.readouterr().out == ""
     assert machine.cpu.regs[0] == 0
+
+
+def test_kernel_string_pointer_reads_and_consumes_keyboard_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    machine, _ = build_kernel(
+        tmp_path,
+        f"LOAD R1, {KEYBOARD_START >> 8}\nLOAD R2, {KEYBOARD_START & 0xFF}\n" "LOAD R0, SYS_PRINT_STRING\nSYSCALL",
+        keyboard_buffer=b"K",
+    )
+
+    run_until_syscall_returns(machine)
+
+    # A direct kernel pointer currently bypasses user isolation; roadmap isolation is expected to change this.
+    assert capsys.readouterr().out == "K"
+    assert machine.cpu.regs[0] == 0
+    assert machine.keyboard.read(1) == 0
+
+
+def test_kernel_terminal_constant_matches_memmap() -> None:
+    source = KERNEL_PATH.read_text()
+    terminal = re.search(r"(?m)^TERMINAL\s*=\s*(\S+)", source)
+
+    assert terminal is not None
+    assert int(terminal.group(1), 0) == TERMINAL_START

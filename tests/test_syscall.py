@@ -1,9 +1,9 @@
 import pytest
 
 from assembler import assemble
-from cpu import RAM_END, RAM_START, SYSCALL_TRAP_VECTOR
 from exceptions import PrivilegedMemoryAccessViolation, PrivilegedOperationViolation, StackPointerOutsideRam
 from isa import LAYOUT, Opcode, PRIVILEGED_OPERATIONS
+from memmap import RAM_END, RAM_START, SYSCALL_TRAP_VECTOR, TERMINAL_START
 from tps import CpuMode
 
 from conftest import build_machine, run_cpu
@@ -25,7 +25,7 @@ def user_program(user: str, handler: str) -> str:
 
 
 KERNEL = (
-    "TERMINAL = 0x0800\nSYS_PRINT_R1 = 1\nSYS_EXIT = 2\n"
+    f"TERMINAL = {TERMINAL_START:#06x}\nSYS_PRINT_R1 = 1\nSYS_EXIT = 2\n"
     "JUMP boot\nJUMP dispatcher\nboot:\n"
     "LOAD R2, <main\nPUSH R2\nLOAD R1, >main\nPUSH R1\n"
     "LOAD R0, 1\nPUSH R0\nRETI\ndispatcher:\nPUSH R3\n"
@@ -218,7 +218,7 @@ def test_reti_stack_fault_is_side_effect_free_and_restores_pc(sp: int) -> None:
 
 def test_kernel_device_write_works_but_user_device_write_faults_after_reti() -> None:
     source = (
-        "TERMINAL = 0x0800\nJUMP boot\nJUMP handler\nboot:\n"
+        f"TERMINAL = {TERMINAL_START:#06x}\nJUMP boot\nJUMP handler\nboot:\n"
         "LOAD R2, <user_main\nPUSH R2\nLOAD R1, >user_main\nPUSH R1\n"
         "LOAD R0, 1\nPUSH R0\nRETI\nhandler:\nSTORE R1, TERMINAL\nRETI\n"
         "user_main:\nLOAD R1, 'D'\nSYSCALL\nSTORE R1, TERMINAL"
@@ -231,7 +231,7 @@ def test_kernel_device_write_works_but_user_device_write_faults_after_reti() -> 
     fault_pc = cpu.PC
     with pytest.raises(PrivilegedMemoryAccessViolation) as error:
         cpu.step()
-    assert error.value.address == 0x0800
+    assert error.value.address == TERMINAL_START
     assert (cpu.PC, cpu.mode, device.writes) == (fault_pc, CpuMode.USER, [(0, ord("D"))])
 
 
@@ -245,10 +245,10 @@ def test_kernel_user_print_exit_program_outputs_de_and_halts() -> None:
 
 
 def test_user_registers_survive_syscall_and_can_be_stored_in_ram() -> None:
-    user = "LOAD R3, 0x69\nLOAD R1, 0x44\nLOAD R0, SYS_PRINT_R1\nSYSCALL\nSTORE R3, 0x0500\nLOAD R0, SYS_EXIT\nSYSCALL"
+    user = "LOAD R3, 0x69\nLOAD R1, 0x44\nLOAD R0, SYS_PRINT_R1\nSYSCALL\n" f"STORE R3, {RAM_START:#06x}\nLOAD R0, SYS_EXIT\nSYSCALL"
     cpu, _ = build_machine(end_to_end_program(user))
     run_cpu(cpu)
-    assert cpu.bus.read(0x0500) == 0x69
+    assert cpu.bus.read(RAM_START) == 0x69
 
 
 def test_user_zero_flag_survives_syscall_return() -> None:

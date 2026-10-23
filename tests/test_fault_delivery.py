@@ -5,12 +5,13 @@ import main
 import pytest
 
 from assembler import assemble
-from cpu import (
+from memmap import (
     BUS_FAULT_VECTOR,
     MACHINE_FAULT_VECTOR,
     PRIV_FAULT_VECTOR,
     RAM_END,
     RAM_START,
+    TERMINAL_START,
 )
 from exceptions import (
     BusFaultUnmappedAddress,
@@ -25,8 +26,7 @@ from isa import Opcode
 from machine import Machine
 from tps import CpuMode
 
-from conftest import build_machine
-
+from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine
 
 def assembled(source: str) -> bytes:
     return b"".join(assemble(source))
@@ -42,8 +42,28 @@ def test_machine_fault_handling_defaults_to_disabled() -> None:
     [
         (assembled("HALT"), CpuMode.USER, 0, 0, PRIV_FAULT_VECTOR),
         (assembled("RETI"), CpuMode.USER, 0, 0, PRIV_FAULT_VECTOR),
-        (assembled("STORE R0, 0x0800"), CpuMode.USER, 0, 0, PRIV_FAULT_VECTOR),
-        (assembled("LOAD R1, 0x5A\nSTORE R1, 0x0C00"), CpuMode.KERNEL, 1, 3, BUS_FAULT_VECTOR),
+        (assembled(f"STORE R0, {TERMINAL_START:#06x}"), CpuMode.USER, 0, 0, PRIV_FAULT_VECTOR),
+        (
+            assembled(f"STORE R0, {CANONICAL_UNMAPPED_ADDRESS:#06x}"),
+            CpuMode.USER,
+            0,
+            0,
+            BUS_FAULT_VECTOR,
+        ),
+        (
+            assembled(f"LOAD R0, {CANONICAL_UNMAPPED_ADDRESS >> 8}\n" f"LOAD R1, {CANONICAL_UNMAPPED_ADDRESS & 0xFF}\nLDR R2, R0, R1"),
+            CpuMode.USER,
+            2,
+            6,
+            BUS_FAULT_VECTOR,
+        ),
+        (
+            assembled(f"LOAD R1, 0x5A\nSTORE R1, {CANONICAL_UNMAPPED_ADDRESS:#06x}"),
+            CpuMode.KERNEL,
+            1,
+            3,
+            BUS_FAULT_VECTOR,
+        ),
         (assembled("STORE R1, 0x0010"), CpuMode.KERNEL, 0, 0, BUS_FAULT_VECTOR),
         (assembled(".byte 0x00"), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
         (bytes([Opcode.LOAD.value, 7, 1]), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
@@ -53,9 +73,19 @@ def test_machine_fault_handling_defaults_to_disabled() -> None:
         (assembled("POP R0"), CpuMode.KERNEL, 0, 0, MACHINE_FAULT_VECTOR),
     ],
     ids=[
-        "user-halt", "user-reti", "user-device-store", "unmapped-store", "rom-store",
-        "illegal-opcode", "invalid-load-register", "invalid-cmpi-register", "invalid-addi-register",
-        "invalid-mov-destination", "empty-pop",
+        "user-halt",
+        "user-reti",
+        "user-device-store",
+        "user-gap-store",
+        "user-gap-load",
+        "unmapped-store",
+        "rom-store",
+        "illegal-opcode",
+        "invalid-load-register",
+        "invalid-cmpi-register",
+        "invalid-addi-register",
+        "invalid-mov-destination",
+        "empty-pop",
     ],
 )
 def test_machine_fault_is_delivered_to_its_vector(
@@ -101,7 +131,7 @@ def test_machine_fault_handling_disabled_still_raises_and_restores_pc(program: b
 
 
 def test_machine_fault_handling_disabled_propagates_from_run() -> None:
-    cpu, _ = build_machine(assembled("STORE R0, 0x0C00"))
+    cpu, _ = build_machine(assembled(f"STORE R0, {CANONICAL_UNMAPPED_ADDRESS:#06x}"))
 
     with pytest.raises(BusFaultUnmappedAddress):
         cpu.run()
@@ -125,17 +155,21 @@ def test_fault_frame_saves_mode_and_zero_flag(mode: CpuMode, zero_flag: bool) ->
 
 def test_fault_after_user_jump_saves_fetch_address() -> None:
     cpu, _ = build_machine(
-        assembled("JUMP 0x0800"),
+        assembled(f"JUMP {TERMINAL_START:#06x}"),
         start_mode=CpuMode.USER,
         handle_machine_faults=True,
     )
     cpu.step()
-    assert cpu.PC == 0x0800
+    assert cpu.PC == TERMINAL_START
 
     cpu.step()
 
     assert cpu.PC == PRIV_FAULT_VECTOR
-    assert [cpu.bus.read(cpu.SP + offset) for offset in range(3)] == [1, 0x08, 0x00]
+    assert [cpu.bus.read(cpu.SP + offset) for offset in range(3)] == [
+        1,
+        TERMINAL_START >> 8,
+        TERMINAL_START & 0xFF,
+    ]
 
 
 @pytest.mark.parametrize("mode", [CpuMode.KERNEL, CpuMode.USER], ids=["kernel", "user"])
@@ -160,7 +194,7 @@ def test_reti_restores_fault_frame_mode_flag_pc_and_stack(mode: CpuMode, zero_fl
 
 
 def test_multibyte_store_fault_restores_pc_and_leaves_state_unchanged() -> None:
-    cpu, device = build_machine(assembled("STORE R0, 0x0C00"))
+    cpu, device = build_machine(assembled(f"STORE R0, {CANONICAL_UNMAPPED_ADDRESS:#06x}"))
     cpu.regs = [0xA5, 0x12, 0x34, 0x56]
     cpu.zero_flag = True
     registers = cpu.regs.copy()
@@ -178,13 +212,23 @@ def test_multibyte_store_fault_restores_pc_and_leaves_state_unchanged() -> None:
 
 def test_ldr_validates_target_before_faulting_bus_read() -> None:
     cpu, _ = build_machine(bytes([Opcode.LDR.value, 7, 0, 1]))
-    cpu.regs = [0x0C, 0x00, 0xA5, 0x5A]
+    cpu.regs = [
+        CANONICAL_UNMAPPED_ADDRESS >> 8,
+        CANONICAL_UNMAPPED_ADDRESS & 0xFF,
+        0xA5,
+        0x5A,
+    ]
 
     with pytest.raises(InvalidCpuRegister):
         cpu.step()
 
     assert cpu.PC == 0
-    assert cpu.regs == [0x0C, 0x00, 0xA5, 0x5A]
+    assert cpu.regs == [
+        CANONICAL_UNMAPPED_ADDRESS >> 8,
+        CANONICAL_UNMAPPED_ADDRESS & 0xFF,
+        0xA5,
+        0x5A,
+    ]
 
 
 def test_non_machine_exception_from_handler_is_not_trapped() -> None:
@@ -246,20 +290,20 @@ def test_double_fault_is_not_a_machine_fault() -> None:
     assert not issubclass(DoubleFault, MachineFault)
 
 
-def test_user_stack_overflow_double_faults_after_1024_pushes() -> None:
+def test_user_stack_overflow_double_faults_after_filling_ram() -> None:
     cpu, _ = build_machine(
         assembled("loop:\nPUSH R0\nJUMP loop"),
         start_mode=CpuMode.USER,
         handle_machine_faults=True,
     )
     pushes = 0
-    for _ in range(2048):
+    for _ in range((RAM_END - RAM_START) * 2):
         old_sp = cpu.SP
         cpu.step()
         if cpu.SP == old_sp - 1:
             pushes += 1
 
-    assert pushes == 1024
+    assert pushes == RAM_END - RAM_START
     assert cpu.SP == RAM_START
     with pytest.raises(DoubleFault):
         cpu.step()
@@ -278,7 +322,7 @@ def test_faulting_generic_vector_retraps_until_stack_exhaustion() -> None:
     assert cpu.SP == RAM_END - 3
     assert cpu.PC == MACHINE_FAULT_VECTOR
 
-    for _ in range(400):
+    for _ in range((RAM_END - RAM_START) // 3):
         try:
             cpu.step()
         except DoubleFault as error:
@@ -298,9 +342,9 @@ def test_faulting_generic_vector_retraps_until_stack_exhaustion() -> None:
     [
         ("HALT", 1, "PRIVILEGE FAULT"),
         ("RETI", 1, "PRIVILEGE FAULT"),
-        ("STORE R0, 0x0800", 1, "PRIVILEGE FAULT"),
+        (f"STORE R0, {TERMINAL_START:#06x}", 1, "PRIVILEGE FAULT"),
         ("STORE R0, 0x0010", 0, "BUS FAULT"),
-        ("STORE R0, 0x0C00", 0, "BUS FAULT"),
+        (f"STORE R0, {CANONICAL_UNMAPPED_ADDRESS:#06x}", 0, "BUS FAULT"),
         (".byte 0x00", 1, "MACHINE FAULT"),
         (".byte 0x02, 0x07, 0x01", 0, "MACHINE FAULT"),
     ],
@@ -324,6 +368,7 @@ def test_rom_kernel_prints_fault_message_and_halts(
     image = b"".join(assemble(source))
     hex_dir = tmp_path / "hex"
     hex_dir.mkdir()
+    hex_path = hex_dir / "kernel_demo.hex"
     hex_path = hex_dir / "kernel_demo.hex"
     hex_path.write_text(image.hex(" "))
     machine = Machine(str(hex_path), handle_machine_faults=True)

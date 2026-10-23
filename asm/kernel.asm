@@ -1,4 +1,4 @@
-TERMINAL = 0x0800
+TERMINAL = 0xF000
 SYS_PRINT_R1 = 1
 SYS_EXIT = 2
 SYS_PRINT_STRING = 3
@@ -92,7 +92,7 @@ exit_print:
     RET
 
 poll_char:
-    LOAD R1, 0x10
+    LOAD R1, 0xF4
     LOAD R2, 0x01
     LDR R3, R1, R2
 

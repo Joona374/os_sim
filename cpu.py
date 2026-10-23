@@ -1,3 +1,5 @@
+from time import sleep
+
 from bus import Bus
 from exceptions import (
     BusFault,
@@ -12,15 +14,7 @@ from exceptions import (
 )
 from tps import Address, Byte, Word, CpuMode
 from isa import Opcode, NUM_REGISTERS, PRIVILEGED_OPERATIONS
-
-RAM_START = 0x0400
-RAM_END = 0x0800
-KERNEL_ONLY_START = 0x0800
-SYSCALL_TRAP_VECTOR = 0x0003
-PRIV_FAULT_VECTOR = 0x0006
-BUS_FAULT_VECTOR = 0x0009
-MACHINE_FAULT_VECTOR = 0x000C
-
+from memmap import RAM_START, RAM_END, KERNEL_ONLY_START, SYSCALL_TRAP_VECTOR, PRIV_FAULT_VECTOR, BUS_FAULT_VECTOR, MACHINE_FAULT_VECTOR
 
 class CPU:
 
@@ -59,6 +53,8 @@ class CPU:
             Opcode.CMPI: self._process_cmpi,
             Opcode.ADDI: self._process_addi,
             Opcode.MOV: self._process_mov,
+            Opcode.SETSP: self._process_setsp,
+            Opcode.GETSP: self._process_getsp,
         }
 
     def run(self) -> None:
@@ -300,6 +296,7 @@ class CPU:
         source_reg = self._fetch_byte()
         reg_value = self._read_from_register(source_reg)
         new_sp = self._validate_sp(self.SP - 1)
+
         self._bus_write(new_sp, reg_value)
         self._set_sp(new_sp)
 
@@ -377,3 +374,29 @@ class CPU:
 
         value = self._read_from_register(source_reg)
         self._write_to_register(target_reg, value)
+
+    def _process_setsp(self):
+        hi_reg = self._fetch_byte()
+        lo_reg = self._fetch_byte()
+
+        self._validate_register(hi_reg)
+        self._validate_register(lo_reg)
+
+        sp_hi_byte = self._read_from_register(hi_reg)
+        sp_lo_byte = self._read_from_register(lo_reg)
+
+        new_sp = self._validate_sp((sp_hi_byte << 8) | sp_lo_byte)
+        self._set_sp(new_sp)
+
+    def _process_getsp(self):
+        hi_reg = self._fetch_byte()
+        lo_reg = self._fetch_byte()
+
+        self._validate_register(hi_reg)
+        self._validate_register(lo_reg)
+
+        sp_hi_byte = self.SP >> 8
+        sp_lo_byte = self.SP & 0xFF
+
+        self._write_to_register(hi_reg, sp_hi_byte)
+        self._write_to_register(lo_reg, sp_lo_byte)

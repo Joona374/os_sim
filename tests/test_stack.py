@@ -1,8 +1,8 @@
 import pytest
 
 from assembler import assemble
-from cpu import RAM_END, RAM_START
 from exceptions import InvalidCpuRegister, MachineFault, StackPointerOutsideRam
+from memmap import RAM_END, RAM_START, TERMINAL_START
 
 from conftest import build_machine, run_cpu
 
@@ -117,8 +117,8 @@ def test_push_at_last_free_stack_byte_succeeds() -> None:
 
 
 def test_call_jumps_and_ret_resumes_after_call() -> None:
-    source = """
-TERMINAL = 0x0800
+    source = f"""
+TERMINAL = {TERMINAL_START:#06x}
 CALL routine
 LOAD R0, 'A'
 STORE R0, TERMINAL
@@ -156,8 +156,8 @@ def test_ret_restores_stack_pointer_after_call() -> None:
 
 
 def test_nested_calls_use_two_stack_frames_and_return_in_order() -> None:
-    source = """
-TERMINAL = 0x0800
+    source = f"""
+TERMINAL = {TERMINAL_START:#06x}
 CALL routine_a
 LOAD R0, 'D'
 STORE R0, TERMINAL
@@ -188,8 +188,8 @@ RET
 
 
 def test_same_routine_returns_to_both_call_sites() -> None:
-    source = """
-TERMINAL = 0x0800
+    source = f"""
+TERMINAL = {TERMINAL_START:#06x}
 CALL routine
 LOAD R0, 'A'
 STORE R0, TERMINAL
@@ -264,8 +264,8 @@ def test_assembler_encodes_call_push_pop_and_ret() -> None:
 
 
 def test_string_printing_program_outputs_hello_world_and_xy() -> None:
-    source = """
-TERMINAL = 0x0800
+    source = f"""
+TERMINAL = {TERMINAL_START:#06x}
 main:
     LOAD R0, 0x58
     LOAD R1, 0x59

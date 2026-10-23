@@ -3,7 +3,7 @@ import pytest
 from bus import Bus
 from exceptions import BusFaultUnmappedAddress, InvalidByteValue
 
-from conftest import RecordingDevice
+from conftest import CANONICAL_UNMAPPED_ADDRESS, RecordingDevice
 
 
 def test_device_at_nonzero_start_receives_relative_offset() -> None:
@@ -18,7 +18,7 @@ def test_device_at_nonzero_start_receives_relative_offset() -> None:
 
 def test_unmapped_bus_access_raises() -> None:
     with pytest.raises(BusFaultUnmappedAddress):
-        Bus().read(0x1234)
+        Bus().read(CANONICAL_UNMAPPED_ADDRESS)
 
 
 def test_bus_rejects_values_above_one_byte() -> None:

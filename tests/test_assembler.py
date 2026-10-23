@@ -5,6 +5,7 @@ import pytest
 
 import assembler as assembler_module
 from assembler import AssemblerError, assemble
+from memmap import TERMINAL_START
 
 def test_printer_source_assembles_with_kernel_vectors_first() -> None:
     source_path = Path(__file__).resolve().parents[1] / "asm" / "printer.asm"
@@ -157,7 +158,9 @@ def test_include_places_kernel_first_and_exports_its_constants(tmp_path: Path) -
     program = b"".join(assemble(source, filename=str(main_path), base_dir=str(tmp_path)))
 
     assert program[0:15:3] == bytes([0x04] * 5)
-    assert program[-7:] == bytes([0x03, 0, 0x08, 0, 0x02, 0, 4])
+    assert program[-7:] == bytes(
+        [0x03, 0, TERMINAL_START >> 8, TERMINAL_START & 0xFF, 0x02, 0, 4]
+    )
 
 
 def test_include_paths_are_relative_to_each_file_and_may_nest(tmp_path: Path) -> None:

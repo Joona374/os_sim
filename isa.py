@@ -24,8 +24,10 @@ class Opcode(Enum):
     CMPI = 0x11
     ADDI = 0x12
     MOV = 0x13
+    SETSP = 0x14
+    GETSP = 0x15
 
-PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI}
+PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI, Opcode.SETSP, Opcode.GETSP}
 
 class Operand(Enum):
     REG = "register"  # 1 byte: register number
@@ -54,6 +56,8 @@ LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.CMPI: [Operand.REG, Operand.IMM8],
     Opcode.ADDI: [Operand.REG, Operand.IMM8],
     Opcode.MOV: [Operand.REG, Operand.REG],
+    Opcode.SETSP: [Operand.REG, Operand.REG],
+    Opcode.GETSP: [Operand.REG, Operand.REG],
 }
 
 OPERAND_SIZE: dict[Operand, int] = {

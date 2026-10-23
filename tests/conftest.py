@@ -1,7 +1,18 @@
 from bus import Bus
-from cpu import CPU, RAM_END, RAM_START
+from cpu import CPU
 from device import RAM, ROM
-from tps import CpuMode
+from memmap import (
+    RAM_SIZE,
+    RAM_START,
+    ROM_SIZE,
+    ROM_START,
+    TERMINAL_END,
+    TERMINAL_START,
+)
+from tps import CpuMode, KB
+
+CANONICAL_UNMAPPED_ADDRESS = 0x8000
+
 
 class RecordingDevice:
     def __init__(self) -> None:
@@ -25,10 +36,10 @@ def build_machine(
     handle_machine_faults: bool = False,
 ) -> tuple[CPU, RecordingDevice]:
     bus = Bus()
-    bus.register_device(0x0000, RAM_START, ROM(program))
-    bus.register_device(RAM_START, RAM_END - RAM_START, RAM())
+    bus.register_device(ROM_START, ROM_SIZE, ROM(program, ROM_SIZE // KB))
+    bus.register_device(RAM_START, RAM_SIZE, RAM(RAM_SIZE // KB))
     recording_device = RecordingDevice()
-    bus.register_device(RAM_END, RAM_END - RAM_START, recording_device)
+    bus.register_device(TERMINAL_START, TERMINAL_END - TERMINAL_START, recording_device)
     return (
         CPU(
             bus,

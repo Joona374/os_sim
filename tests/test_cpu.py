@@ -6,9 +6,9 @@ import pytest
 from cpu import CPU
 from exceptions import InvalidCpuRegister, MachineFault
 from isa import LAYOUT, Opcode
+from memmap import RAM_END, RAM_START
 
-from conftest import build_machine, run_program
-
+from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine, run_program
 
 def test_load_sets_register() -> None:
     cpu = run_program(bytes([0x02, 0x01, 0xA5, 0x01]))
@@ -16,8 +16,8 @@ def test_load_sets_register() -> None:
 
 
 def test_store_writes_register_to_address() -> None:
-    cpu = run_program(bytes([0x02, 0x02, 0xA5, 0x03, 0x02, 0x04, 0x00, 0x01]))
-    assert cpu.bus.read(0x0400) == 0xA5
+    cpu = run_program(bytes([0x02, 0x02, 0xA5, 0x03, 0x02, RAM_START >> 8, RAM_START & 0xFF, 0x01]))
+    assert cpu.bus.read(RAM_START) == 0xA5
 
 
 def test_jump_skips_code_and_supports_nonzero_high_byte() -> None:
@@ -51,9 +51,7 @@ def test_cmp_clears_zero_flag_after_unequal_comparison() -> None:
     ],
     ids=["zero-equal", "zero-unequal-clears", "max-equal", "max-unequal-clears"],
 )
-def test_cmpi_sets_zero_flag_without_changing_registers(
-    register_value: int, immediate: int, initial_flag: bool, expected_flag: bool
-) -> None:
+def test_cmpi_sets_zero_flag_without_changing_registers(register_value: int, immediate: int, initial_flag: bool, expected_flag: bool) -> None:
     cpu, _ = build_machine(bytes([Opcode.CMPI.value, 0, immediate]))
     cpu.regs = [register_value, 0x12, 0x34, 0x56]
     registers = cpu.regs.copy()
@@ -76,9 +74,7 @@ def test_cmpi_sets_zero_flag_without_changing_registers(
     ],
     ids=["normal-add", "wraps-to-zero", "zero-plus-zero", "clears-set-zero"],
 )
-def test_addi_wraps_result_sets_zero_flag_and_preserves_other_registers(
-    initial: int, immediate: int, expected: int, initial_flag: bool, expected_flag: bool
-) -> None:
+def test_addi_wraps_result_sets_zero_flag_and_preserves_other_registers(initial: int, immediate: int, expected: int, initial_flag: bool, expected_flag: bool) -> None:
     cpu, _ = build_machine(bytes([Opcode.ADDI.value, 1, immediate]))
     cpu.regs = [0x11, initial, 0x33, 0x44]
     cpu.zero_flag = initial_flag
@@ -108,7 +104,7 @@ def test_new_instruction_invalid_register_fault_is_side_effect_free(opcode: Opco
     cpu.zero_flag = True
     cpu.SP -= 2
     registers = cpu.regs.copy()
-    memory = [cpu.bus.read(address) for address in range(0x0400, 0x0800)]
+    memory = [cpu.bus.read(address) for address in range(RAM_START, RAM_END)]
     initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())
 
     with pytest.raises(InvalidCpuRegister):
@@ -117,6 +113,8 @@ def test_new_instruction_invalid_register_fault_is_side_effect_free(opcode: Opco
     assert cpu.PC == 0
     assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
     assert cpu.regs == registers
+
+
 @pytest.mark.parametrize("zero_flag", [False, True], ids=["clear", "set"])
 def test_mov_copies_register_without_changing_source_or_zero_flag(zero_flag: bool) -> None:
     cpu, _ = build_machine(bytes([Opcode.MOV.value, 0, 1]))
@@ -131,10 +129,7 @@ def test_mov_copies_register_without_changing_source_or_zero_flag(zero_flag: boo
 
 
 def test_mov_same_register_is_valid_and_cmp_branch_flag_survives_mov() -> None:
-    program = bytes(
-        [0x02, 0, 7, 0x02, 1, 7, 0x05, 0, 1, Opcode.MOV.value, 2, 2,
-         0x06, 0, 18, 0x02, 3, 0xEE, 0x01]
-    )
+    program = bytes([0x02, 0, 7, 0x02, 1, 7, 0x05, 0, 1, Opcode.MOV.value, 2, 2, 0x06, 0, 18, 0x02, 3, 0xEE, 0x01])
     cpu = run_program(program)
 
     assert cpu.regs == [7, 7, 0, 0]
@@ -152,7 +147,7 @@ def test_mov_invalid_register_fault_is_side_effect_free(destination: int, source
     cpu.zero_flag = True
     cpu.SP -= 2
     registers = cpu.regs.copy()
-    memory = [cpu.bus.read(address) for address in range(0x0400, 0x0800)]
+    memory = [cpu.bus.read(address) for address in range(RAM_START, RAM_END)]
     initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())
 
     with pytest.raises(InvalidCpuRegister):
@@ -160,10 +155,9 @@ def test_mov_invalid_register_fault_is_side_effect_free(destination: int, source
 
     assert cpu.PC == 0
     assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
-    assert [cpu.bus.read(address) for address in range(0x0400, 0x0800)] == memory
+    assert [cpu.bus.read(address) for address in range(RAM_START, RAM_END)] == memory
 
-
-    assert [cpu.bus.read(address) for address in range(0x0400, 0x0800)] == memory
+    assert [cpu.bus.read(address) for address in range(RAM_START, RAM_END)] == memory
 
 
 def test_jz_jumps_when_zero_flag_is_set_and_falls_through_when_clear() -> None:
@@ -200,7 +194,28 @@ def test_subtracting_equal_values_sets_zero_flag() -> None:
 
 
 def test_ldr_reads_from_ram_and_rom() -> None:
-    ram_program = bytes([0x02, 1, 0xAB, 0x03, 1, 0x04, 0x00, 0x02, 2, 4, 0x02, 3, 0, 0x09, 0, 2, 3, 1])
+    ram_program = bytes(
+        [
+            0x02,
+            1,
+            0xAB,
+            0x03,
+            1,
+            RAM_START >> 8,
+            RAM_START & 0xFF,
+            0x02,
+            2,
+            RAM_START >> 8,
+            0x02,
+            3,
+            RAM_START & 0xFF,
+            0x09,
+            0,
+            2,
+            3,
+            1,
+        ]
+    )
     rom_program = bytes([0x02, 2, 0, 0x02, 3, 11, 0x09, 0, 2, 3, 0x01, 0xAB])
 
     assert run_program(ram_program).regs[0] == 0xAB
@@ -232,11 +247,24 @@ def test_store_into_rom_raises_machine_fault() -> None:
 
 
 def test_fetch_and_ldr_read_from_unmapped_addresses_raise_machine_fault() -> None:
-    fetch_cpu, _ = build_machine(bytes([0x04, 0x0C, 0x00]))
+    fetch_cpu, _ = build_machine(bytes([0x04, CANONICAL_UNMAPPED_ADDRESS >> 8, CANONICAL_UNMAPPED_ADDRESS & 0xFF]))
     with pytest.raises(MachineFault):
         fetch_cpu.run()
 
-    read_program = bytes([0x02, 2, 0x0C, 0x02, 3, 0, 0x09, 0, 2, 3])
+    read_program = bytes(
+        [
+            0x02,
+            2,
+            CANONICAL_UNMAPPED_ADDRESS >> 8,
+            0x02,
+            3,
+            CANONICAL_UNMAPPED_ADDRESS & 0xFF,
+            0x09,
+            0,
+            2,
+            3,
+        ]
+    )
     read_cpu, _ = build_machine(read_program)
     with pytest.raises(MachineFault):
         read_cpu.run()

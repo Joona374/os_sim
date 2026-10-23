@@ -2,7 +2,6 @@ import pytest
 
 import isa
 from assembler import assemble
-from cpu import KERNEL_ONLY_START, RAM_END, RAM_START
 from exceptions import (
     BusFaultUnmappedAddress,
     IllegalInstruction,
@@ -13,10 +12,15 @@ from exceptions import (
     WriteToRomError,
 )
 from isa import Opcode
+from memmap import (
+    KERNEL_ONLY_START,
+    RAM_END,
+    RAM_START,
+    TERMINAL_START,
+)
 from tps import CpuMode
 
-from conftest import build_machine
-
+from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine
 
 def assembled(source: str) -> bytes:
     return b"".join(assemble(source))
@@ -43,7 +47,7 @@ def test_halt_runs_in_kernel_mode() -> None:
 
 
 def test_kernel_mode_can_store_to_recording_device() -> None:
-    cpu, recording_device = build_machine(assembled("LOAD R0, 0x5A\nSTORE R0, 0x0800"))
+    cpu, recording_device = build_machine(assembled(f"LOAD R0, 0x5A\nSTORE R0, {TERMINAL_START:#06x}"))
     cpu.step()
     cpu.step()
 
@@ -51,9 +55,7 @@ def test_kernel_mode_can_store_to_recording_device() -> None:
 
 
 def test_kernel_mode_can_load_from_recording_device() -> None:
-    cpu, recording_device = build_machine(
-        assembled("LOAD R0, 0x08\nLOAD R1, 0\nLDR R2, R0, R1")
-    )
+    cpu, recording_device = build_machine(assembled(f"LOAD R0, {TERMINAL_START >> 8}\nLOAD R1, 0\nLDR R2, R0, R1"))
     recording_device.memory[0] = 0xA5
 
     cpu.step()
@@ -118,16 +120,21 @@ RET
 
 
 def test_user_mode_can_store_to_last_ram_address() -> None:
-    cpu, _ = build_machine(assembled("LOAD R0, 0x5A\nSTORE R0, 0x07FF"), start_mode=CpuMode.USER)
+    last_ram_address = RAM_END - 1
+    cpu, _ = build_machine(
+        assembled(f"LOAD R0, 0x5A\nSTORE R0, {last_ram_address:#06x}"),
+        start_mode=CpuMode.USER,
+    )
     cpu.step()
     cpu.step()
 
-    assert cpu.bus.read(0x07FF) == 0x5A
+    assert cpu.bus.read(last_ram_address) == 0x5A
 
 
 def test_user_mode_store_to_device_faults_before_device_write() -> None:
     cpu, recording_device = build_machine(
-        assembled("LOAD R0, 0x5A\nSTORE R0, 0x0800"), start_mode=CpuMode.USER
+        assembled(f"LOAD R0, 0x5A\nSTORE R0, {TERMINAL_START:#06x}"),
+        start_mode=CpuMode.USER,
     )
     cpu.step()
     initial_registers = cpu.regs.copy()
@@ -147,9 +154,10 @@ def test_user_mode_store_to_device_faults_before_device_write() -> None:
 
 def test_user_mode_can_load_from_last_ram_address() -> None:
     cpu, _ = build_machine(assembled("LDR R2, R0, R1"), start_mode=CpuMode.USER)
-    cpu.regs[0] = 0x07
-    cpu.regs[1] = 0xFF
-    cpu.bus.write(0x07FF, 0xA5)
+    last_ram_address = RAM_END - 1
+    cpu.regs[0] = last_ram_address >> 8
+    cpu.regs[1] = last_ram_address & 0xFF
+    cpu.bus.write(last_ram_address, 0xA5)
 
     cpu.step()
 
@@ -160,7 +168,7 @@ def test_user_mode_load_from_device_faults_before_device_read() -> None:
     cpu, recording_device = build_machine(
         assembled("LDR R2, R0, R1"), start_mode=CpuMode.USER
     )
-    cpu.regs[0] = 0x08
+    cpu.regs[0] = TERMINAL_START >> 8
     cpu.regs[1] = 0
     cpu.regs[2] = 0xCC
     recording_device.memory[0] = 0xA5
@@ -175,7 +183,7 @@ def test_user_mode_load_from_device_faults_before_device_read() -> None:
 
 
 def test_user_jump_to_device_region_faults_on_next_instruction_fetch() -> None:
-    cpu, _ = build_machine(assembled("JUMP 0x0800"), start_mode=CpuMode.USER)
+    cpu, _ = build_machine(assembled(f"JUMP {TERMINAL_START:#06x}"), start_mode=CpuMode.USER)
     cpu.step()
 
     assert cpu.PC == KERNEL_ONLY_START
@@ -219,7 +227,7 @@ LOAD R3, 1
 
 
 def test_kernel_mode_can_store_to_protected_region() -> None:
-    cpu, recording_device = build_machine(assembled("LOAD R0, 0x5A\nSTORE R0, 0x0800"))
+    cpu, recording_device = build_machine(assembled(f"LOAD R0, 0x5A\nSTORE R0, {TERMINAL_START:#06x}"))
     cpu.step()
     cpu.step()
 
@@ -228,7 +236,7 @@ def test_kernel_mode_can_store_to_protected_region() -> None:
 
 def test_kernel_mode_can_load_from_protected_region() -> None:
     cpu, recording_device = build_machine(assembled("LDR R2, R0, R1"))
-    cpu.regs[0] = 0x08
+    cpu.regs[0] = TERMINAL_START >> 8
     cpu.regs[1] = 0
     recording_device.memory[0] = 0xA5
 
@@ -244,19 +252,19 @@ def test_kernel_mode_can_load_from_protected_region() -> None:
         (assembled(".byte 0xFF"), CpuMode.KERNEL, IllegalInstruction, 0, "value", 0xFF, None),
         (bytes([Opcode.LOAD.value, 4, 1]), CpuMode.KERNEL, InvalidCpuRegister, 0, "value", 4, None),
         (
-            assembled("LOAD R0, 0x0C\nLOAD R1, 0\nLDR R2, R0, R1"),
+            assembled(f"LOAD R0, {CANONICAL_UNMAPPED_ADDRESS >> 8}\n" f"LOAD R1, {CANONICAL_UNMAPPED_ADDRESS & 0xFF}\nLDR R2, R0, R1"),
             CpuMode.KERNEL,
             BusFaultUnmappedAddress,
             6,
             "address",
-            0x0C00,
+            CANONICAL_UNMAPPED_ADDRESS,
             None,
         ),
         (assembled("LOAD R0, 1\nSTORE R0, 0"), CpuMode.KERNEL, WriteToRomError, 3, None, None, None),
         (assembled("POP R0"), CpuMode.KERNEL, StackPointerOutsideRam, 0, "sp", RAM_END + 1, None),
         (assembled("HALT"), CpuMode.USER, PrivilegedOperationViolation, 0, "operation", Opcode.HALT, None),
         (
-            assembled("STORE R0, 0x0800"),
+            assembled(f"STORE R0, {TERMINAL_START:#06x}"),
             CpuMode.USER,
             PrivilegedMemoryAccessViolation,
             0,
@@ -304,7 +312,9 @@ def test_trace_includes_kernel_mode(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_trace_includes_user_mode_and_faulting_instruction(capsys: pytest.CaptureFixture[str]) -> None:
     cpu, _ = build_machine(
-        assembled("STORE R0, 0x0800"), start_mode=CpuMode.USER, trace_mode=True
+        assembled(f"STORE R0, {TERMINAL_START:#06x}"),
+        start_mode=CpuMode.USER,
+        trace_mode=True,
     )
 
     with pytest.raises(PrivilegedMemoryAccessViolation):

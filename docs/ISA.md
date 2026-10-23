@@ -1,6 +1,6 @@
 # CPU ISA and Assembly Reference
 
-This describes the behavior implemented by the CPU and assembler. Programs are assembled at address `0x0000`; labels therefore resolve to addresses relative to the start of the image.
+This describes the behavior implemented by the CPU and assembler. Programs are assembled at address `0x0000`; labels therefore resolve to addresses relative to the start of the image. Address map values are defined in `memmap.py`, the source of truth for the layout.
 
 ## 1. Machine Model
 
@@ -8,7 +8,7 @@ This describes the behavior implemented by the CPU and assembler. Programs are a
 |---|---|
 | Registers | `R0`–`R3`, each 8-bit and initially zero |
 | `PC` | 16-bit program counter, starts at `0x0000` |
-| `SP` | 16-bit stack pointer, starts at `0x0800` |
+| `SP` | 16-bit stack pointer, starts at `0x2000` |
 | Mode | Starts in kernel mode unless `start_mode` selects user mode. |
 | Zero flag (`Z`) | Starts clear. `CMP`/`CMPI` set it for equal values; `ADD`/`ADDI`/`SUB` set it when the 8-bit result is zero. `MOV` leaves it unchanged. Trap frames save and restore it. |
 | Word byte order | Big-endian: high byte first, then low byte |
@@ -17,15 +17,16 @@ Default address map:
 
 | Addresses | Device | Behavior |
 |---|---|---|
-| `0x0000`–`0x03FF` | 1 KiB ROM | Program image, zero-padded; writes fault |
-| `0x0400`–`0x07FF` | 1 KiB RAM | Read/write memory; stack is placed here |
-| `0x0800`–`0x0BFF` | 1 KiB terminal device | Writes print a character; reads return `0x00` |
-| `0x1000`–`0x13FF` | 1 KiB keyboard device | Kernel-only; data and status registers are at offsets `0` and `1` |
-| Everything else | Unmapped | Access faults |
+| `0x0000`–`0x0FFF` | 4 KiB ROM | Program image, zero-padded; writes fault |
+| `0x1000`–`0x1FFF` | 4 KiB RAM | Read/write memory; stack is placed here |
+| `0x2000`–`0xEFFF` | Unmapped gap | Access faults with `BusFault` |
+| `0xF000`–`0xF3FF` | 1 KiB terminal device | Writes print a character; reads return `0x00` |
+| `0xF400`–`0xF7FF` | 1 KiB keyboard device | Kernel-only; data and status registers are at offsets `0` and `1` |
+| `0xF800`–`0xFFFF` | Unmapped | Access faults with `BusFault` |
 
-The terminal prints a character when offset `0` is written; reads return `0x00`. The keyboard is kernel-only, like every address at or above `0x0800`. Its data register is at offset `0`, and its status register is at offset `1` (`1` means a byte is waiting, `0` means the queue is empty). Reading data consumes that byte and loads the next queued byte, if any; an empty data read returns `0`. A queued `0x00` is a real byte and can be distinguished from an empty queue only by checking status first. Writes are ignored, and reads of other keyboard offsets return `0`.
+The terminal prints a character when offset `0` is written; reads return `0x00`. The keyboard is kernel-only, like every address at or above `0xF000`. Its data register is at offset `0`, and its status register is at offset `1` (`1` means a byte is waiting, `0` means the queue is empty). Reading data consumes that byte and loads the next queued byte, if any; an empty data read returns `0`. A queued `0x00` is a real byte and can be distinguished from an empty queue only by checking status first. Writes are ignored, and reads of other keyboard offsets return `0`.
 
-The stack grows down from `SP = 0x0800`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x0800` is a valid empty-stack boundary, not a RAM byte. Stack bytes occupy `0x0400`–`0x07FF`.
+The stack grows down from `SP = 0x2000`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x2000` is a valid empty-stack boundary, not a RAM byte. Stack bytes occupy `0x1000`–`0x1FFF`.
 
 The CPU starts at `PC = 0x0000`. ROM begins with five three-byte absolute `JUMP` vectors; boot code begins at `0x000F`:
 
@@ -38,7 +39,7 @@ The CPU starts at `PC = 0x0000`. ROM begins with five three-byte absolute `JUMP`
 | `0x000C` | Other machine fault |
 | `0x000F` | Boot code begins after the vector slots |
 
-`HALT` and `RETI` are privileged instructions; they fault in user mode. User-mode data accesses and instruction fetches at or above `0x0800` fault, while ROM and RAM below that address remain accessible. Kernel mode has no such address restriction.
+`HALT` and `RETI` are privileged instructions; they fault in user mode. User-mode data accesses and instruction fetches at or above the kernel-only boundary `0xF000` fault as privilege violations. Accesses to the unmapped gap below that boundary can still produce bus faults in user mode. ROM and RAM below `0xF000` are accessible to user mode; kernel mode has no address privilege restriction.
 
 ## 2. Assembly Syntax
 
@@ -83,6 +84,8 @@ Sizes include the opcode byte. `Z` is the only flag.
 | `CMPI` | `11` | register, imm8 | 3 | `Z` | No | Set `Z` if the register equals the immediate byte. |
 | `ADDI` | `12` | register, imm8 | 3 | `Z` | No | Add the immediate byte modulo 256 and set `Z` if the result is zero. |
 | `MOV` | `13` | register, register | 3 | — | No | Copy the source register into the destination without changing `Z`. |
+| `SETSP` | `14` | high-byte register, low-byte register | 3 | — | Yes | Set `SP` from the two registers; the result must be within RAM stack bounds. |
+| `GETSP` | `15` | high-byte register, low-byte register | 3 | — | Yes | Copy `SP` into the two registers, high byte first. |
 
 For `STORE`, `JUMP`, `JZ`, `JNZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` forms its address as `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
 
@@ -104,7 +107,7 @@ Example: `LOAD R0, 0x2A` → `02 00 2A`
 
 Layout: opcode, source register, address high byte, address low byte.
 
-Example: `STORE R1, 0x0400` → `03 01 04 00`
+Example: `STORE R1, 0x1000` → `03 01 10 00`
 
 ### `JUMP`
 
@@ -147,6 +150,18 @@ Example: `ADDI R0, 1` → `12 00 01`
 Layout: opcode, destination register, source register.
 
 Example: `MOV R1, R0` → `13 01 00`
+
+### `SETSP`
+
+Layout: opcode, high-byte register, low-byte register.
+
+Example: `SETSP R1, R2` → `14 01 02`
+
+### `GETSP`
+
+Layout: opcode, high-byte register, low-byte register.
+
+Example: `GETSP R1, R2` → `15 01 02`
 
 ### `ADD`
 
@@ -208,7 +223,7 @@ Guest-caused CPU faults are `MachineFault` exceptions. When trap handling is ena
 
 | Fault class and kinds | Trigger | Vector |
 |---|---|---|
-| `PrivilegeViolation`: `PrivilegedOperationViolation`, `PrivilegedMemoryAccessViolation` | Privileged operation in user mode, or user-mode fetch/read/write at or above `0x0800` | `0x0006` |
+| `PrivilegeViolation`: `PrivilegedOperationViolation`, `PrivilegedMemoryAccessViolation` | Privileged operation in user mode, or user-mode fetch/read/write at or above `0xF000` | `0x0006` |
 | `BusFault`: `WriteToRomError`, `BusFaultUnmappedAddress` | Write to ROM, or access to an unmapped address | `0x0009` |
 | Other `MachineFault`: `IllegalInstruction`, `InvalidCpuRegister`, `StackPointerOutsideRam` | Illegal opcode (including `0x00`), invalid register, or stack operation/frame outside RAM bounds | `0x000C` |
 
@@ -223,7 +238,7 @@ new SP       new SP + 1   new SP + 2
 
 In the flags byte, bit 0 stores the previous mode (`0` kernel, `1` user), bit 1 stores `Z`, and the remaining bits are unused. `RETI` restores mode, `Z`, and `PC` from this frame, then advances `SP` by three.
 
-The saved `PC` depends on the trap kind. A machine-fault frame stores the address of the first byte of the faulting instruction, so resuming with `RETI` retries that instruction. A syscall frame stores the address of the next instruction, so returning continues after the trap instruction. For example, a user `JUMP 0x0800` succeeds; the following instruction fetch faults and records `0x0800`.
+The saved `PC` depends on the trap kind. A machine-fault frame stores the address of the first byte of the faulting instruction, so resuming with `RETI` retries that instruction. A syscall frame stores the address of the next instruction, so returning continues after the trap instruction. For example, a user `JUMP 0xF000` succeeds; the following instruction fetch faults and records `0xF000`.
 
 Instructions follow a “validate everything, then commit” rule: validate registers, permissions, addresses, and stack bounds and complete required reads before changing registers, flags, `SP`, memory, or mode. If an instruction raises a `MachineFault`, `PC` is restored to that instruction's first byte and its effects are not committed. With `handle_machine_faults=False` (the default), the fault propagates from `step()` or `run()`. With it enabled, the CPU saves the pre-fault mode and `Z`, enters kernel mode at the matching vector, and continues. Exceptions that are not `MachineFault` are simulator errors and propagate rather than becoming traps.
 
@@ -246,7 +261,7 @@ Stack faults from `RETI` leave the frame, `SP`, mode, flags, and registers uncha
 This is the loop assembled from `asm/hello_rom.asm`. The pointer begins at the label `msg`; the loop reads and prints bytes until it reads the terminator. The final jump skips the inline string data.
 
 ```asm
-TERMINAL = 0x0800
+TERMINAL = 0xF000
 
 main:
     LOAD  R2, >msg
@@ -271,7 +286,7 @@ Assembler output by statement:
 
 ```text
 02 02 00 | 02 03 21 | 09 00 02 03 | 02 01 00 | 05 00 01
-06 00 20 | 03 00 08 00 | 02 01 01 | 07 03 01 | 04 00 06 | 01
+06 00 20 | 03 00 F0 00 | 02 01 01 | 07 03 01 | 04 00 06 | 01
 48 45 4C 4C 4F 21 0A 00
 ```
 
@@ -301,10 +316,10 @@ After `HALT`, the pointer registers contain `R1 = 0x05` and `R2 = 0x00`. `Z` is 
 
 ### Call a subroutine twice
 
-The same `emit` routine is called with two different values. Each call pushes the address after its `CALL`; `RET` restores it. The subroutine does not use extra stack space, and the stack returns to `0x0800` after each call.
+The same `emit` routine is called with two different values. Each call pushes the address after its `CALL`; `RET` restores it. The subroutine does not use extra stack space, and the stack returns to `0x2000` after each call.
 
 ```asm
-TERMINAL = 0x0800
+TERMINAL = 0xF000
 LOAD R0, 'A'
 CALL emit
 LOAD R0, 'B'
@@ -320,7 +335,7 @@ Assembler output by statement:
 
 ```text
 02 00 41 | 0C 00 0D | 02 00 42 | 0C 00 0D | 01
-03 00 08 00 | 0D
+03 00 F0 00 | 0D
 ```
 
 This prints `AB`; `emit` is at `0x000D`.
