@@ -7,7 +7,13 @@ from memmap import KEYBOARD_END, KEYBOARD_START, RAM_SIZE, RAM_START, ROM_SIZE, 
 class Machine:
 
     def __init__(
-        self, image_path: str, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False, keyboard_buffer: bytearray | bytes | str | None = None
+        self,
+        image_path: str,
+        trace_mode: bool = False,
+        start_mode: CpuMode = CpuMode.KERNEL,
+        handle_machine_faults: bool = False,
+        keyboard_buffer: bytearray | bytes | str | None = None,
+        slow_mode: bool = False,
     ) -> None:
         self.bus = Bus()
 
@@ -24,7 +30,7 @@ class Machine:
         self.keyboard = Keyboard(keyboard_buffer)
         self.bus.register_device(KEYBOARD_START, KB, self.keyboard)
 
-        self.cpu = CPU(self.bus, trace_mode=trace_mode, start_mode=start_mode, handle_machine_faults=handle_machine_faults)
+        self.cpu = CPU(self.bus, trace_mode=trace_mode, start_mode=start_mode, handle_machine_faults=handle_machine_faults, slow_mode=slow_mode)
 
     def load_image(self, path: str) -> bytes:
         with open(path) as f:

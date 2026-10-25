@@ -14,13 +14,14 @@ from exceptions import (
 )
 from tps import Address, Byte, Word, CpuMode
 from isa import Opcode, NUM_REGISTERS, PRIVILEGED_OPERATIONS
-from memmap import RAM_START, RAM_END, KERNEL_ONLY_START, SYSCALL_TRAP_VECTOR, PRIV_FAULT_VECTOR, BUS_FAULT_VECTOR, MACHINE_FAULT_VECTOR
+from memmap import RAM_START, RAM_END, KERNEL_ONLY_START, SYSCALL_TRAP_VECTOR, PRIV_FAULT_VECTOR, BUS_FAULT_VECTOR, MACHINE_FAULT_VECTOR, KERNEL_DATA_START
 
 class CPU:
 
-    def __init__(self, bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False) -> None:
+    def __init__(self, bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False, slow_mode: bool = False) -> None:
         # TRACING
         self.TRACE_MODE: bool = trace_mode
+        self.SLOW_MODE: bool = slow_mode
         self.handle_machine_faults = handle_machine_faults
         self.bytes_for_operation: list[Byte] = []
 
@@ -55,6 +56,8 @@ class CPU:
             Opcode.MOV: self._process_mov,
             Opcode.SETSP: self._process_setsp,
             Opcode.GETSP: self._process_getsp,
+            Opcode.LDA: self._process_lda,
+            Opcode.SUBI: self._process_subi,
         }
 
     def run(self) -> None:
@@ -85,13 +88,16 @@ class CPU:
         finally:
             if self.TRACE_MODE:
                 self._print_trace(start_pc, op_code)
+            if self.SLOW_MODE:
+                sleep(0.1)
 
     def _print_trace(self, pc: int, op_code: Opcode | None) -> None:
         name = op_code.name if op_code else "???"
         raw = " ".join(f"{b:02X}" for b in self.bytes_for_operation)
         regs = " ".join(f"r{i}={v:02X}" for i, v in enumerate(self.regs))
         mode = "K" if self.mode == CpuMode.KERNEL else "U"
-        print(f"{pc:04X}  {raw:<12} {name:<7} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X} M={mode} ")
+        pid = self._bus_read(KERNEL_DATA_START)  # Current process happens to live here
+        print(f"{pc:04X}  {raw:<12} {name:<7} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X} M={mode} PID={pid}")
 
     ############# Cpu helpers #############
 
@@ -400,3 +406,22 @@ class CPU:
 
         self._write_to_register(hi_reg, sp_hi_byte)
         self._write_to_register(lo_reg, sp_lo_byte)
+
+    def _process_lda(self):
+        register = self._fetch_byte()
+        addr = self._fetch_word()
+
+        value_at_addr = self._bus_read(addr)
+        self._write_to_register(register, value_at_addr)
+
+    def _process_subi(self):
+        reg = self._fetch_byte()
+        self._validate_register(reg)
+
+        imm_value = self._fetch_byte()
+        reg_value = self._read_from_register(reg)
+
+        sub_result = (reg_value - imm_value) & 0xFF
+
+        self._write_to_register(reg, sub_result)
+        self.zero_flag = sub_result == 0

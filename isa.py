@@ -26,6 +26,8 @@ class Opcode(Enum):
     MOV = 0x13
     SETSP = 0x14
     GETSP = 0x15
+    LDA = 0x16
+    SUBI = 0x17
 
 PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI, Opcode.SETSP, Opcode.GETSP}
 
@@ -58,6 +60,8 @@ LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.MOV: [Operand.REG, Operand.REG],
     Opcode.SETSP: [Operand.REG, Operand.REG],
     Opcode.GETSP: [Operand.REG, Operand.REG],
+    Opcode.LDA: [Operand.REG, Operand.ADDR16],
+    Opcode.SUBI: [Operand.REG, Operand.IMM8],
 }
 
 OPERAND_SIZE: dict[Operand, int] = {
