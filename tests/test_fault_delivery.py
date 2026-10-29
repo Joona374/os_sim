@@ -37,6 +37,19 @@ def test_machine_fault_handling_defaults_to_disabled() -> None:
     assert cpu.handle_machine_faults is False
 
 
+def test_fault_delivery_still_ticks_devices_once_for_the_step() -> None:
+    image = bytearray(MACHINE_FAULT_VECTOR + 1)
+    image[0] = 0xFF
+    image[MACHINE_FAULT_VECTOR] = Opcode.HALT.value
+    cpu, device = build_machine(bytes(image), handle_machine_faults=True)
+
+    cpu.run()
+
+    assert cpu.PC == MACHINE_FAULT_VECTOR + 1
+    assert cpu.halted is True
+    assert device.ticks == 2
+
+
 @pytest.mark.parametrize(
     ("program", "mode", "pre_steps", "fault_pc", "vector"),
     [
@@ -359,7 +372,7 @@ def test_rom_kernel_prints_fault_message_and_halts(
 ) -> None:
     kernel_path = Path(__file__).resolve().parents[1] / "asm" / "kernel.asm"
     source = kernel_path.read_text()
-    source += "\nmain:\n" + snippet
+    source += "\nmain_a:\n" + snippet + "\nmain_b:\nLOAD R0, SYS_EXIT\nSYSCALL\n"
     source = source.replace(
         "LOAD R2, 1\n    PUSH R2",
         f"LOAD R2, {initial_flags}\n    PUSH R2",
@@ -400,6 +413,7 @@ def test_main_parses_and_removes_flags(tmp_path: Path, monkeypatch: pytest.Monke
             pass
 
     class FakeMachine:
+
         def __init__(
             self,
             path: str,
@@ -407,6 +421,7 @@ def test_main_parses_and_removes_flags(tmp_path: Path, monkeypatch: pytest.Monke
             start_mode: CpuMode,
             handle_machine_faults: bool,
             keyboard_buffer: bytearray | bytes | str | None = None,
+            slow_mode: bool = False,
         ) -> None:
             captured.update(
                 path=path,

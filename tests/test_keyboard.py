@@ -22,11 +22,16 @@ def build_machine(tmp_path: Path, program: bytes, keyboard_buffer=None, start_mo
 
 
 def test_keyboard_data_and_status_register_drain_queue_in_order() -> None:
-    keyboard = Keyboard(bytearray(b"abc"))
+    keyboard = Keyboard(bytearray(b"abc"), ticks_per_action=1)
 
     assert keyboard.read(1) == 1
     assert keyboard.read(1) == 1
-    assert [keyboard.read(0), keyboard.read(0), keyboard.read(0)] == list(b"abc")
+    assert keyboard.read(0) == ord("a")
+    for expected in b"bc":
+        keyboard.tick()
+        keyboard.tick()
+        assert keyboard.read(1) == 1
+        assert keyboard.read(0) == expected
     assert keyboard.read(1) == 0
     assert keyboard.read(0) == 0
     assert keyboard.read(1) == 0
@@ -34,9 +39,13 @@ def test_keyboard_data_and_status_register_drain_queue_in_order() -> None:
 
 @pytest.mark.parametrize("buffer", [b"xy", bytearray(b"xy"), "xy"])
 def test_keyboard_accepts_bytes_bytearray_and_ascii_string(buffer) -> None:
-    keyboard = Keyboard(buffer)
+    keyboard = Keyboard(buffer, ticks_per_action=1)
     assert keyboard.read(0) == ord("x")
+    keyboard.tick()
+    keyboard.tick()
     assert keyboard.read(0) == ord("y")
+    keyboard.tick()
+    keyboard.tick()
     assert keyboard.read(0) == 0
 
 
@@ -46,6 +55,35 @@ def test_keyboard_nul_is_distinguished_by_status() -> None:
     assert keyboard.read(1) == 1
     assert keyboard.read(0) == 0
     assert keyboard.read(1) == 0
+
+
+def test_keyboard_next_key_arrives_after_exact_tick_delay() -> None:
+    keyboard = Keyboard(b"ab", ticks_per_action=3)
+
+    assert keyboard.read(0) == ord("a")
+    for _ in range(2):
+        keyboard.tick()
+        assert keyboard.read(1) == 0
+
+    keyboard.tick()
+
+    assert keyboard.read(1) == 1
+    assert keyboard.read(0) == ord("b")
+
+
+def test_keyboard_waits_for_previous_key_read_even_after_delay() -> None:
+    keyboard = Keyboard(b"ab", ticks_per_action=2)
+
+    keyboard.tick()
+    keyboard.tick()
+    assert keyboard.read(1) == 1
+    assert keyboard.read(0) == ord("a")
+    assert keyboard.read(1) == 0
+
+    keyboard.tick()
+
+    assert keyboard.read(1) == 1
+    assert keyboard.read(0) == ord("b")
 
 
 def test_keyboard_ignores_all_writes_and_unknown_reads_return_zero() -> None:
@@ -62,12 +100,17 @@ def test_keyboard_ignores_all_writes_and_unknown_reads_return_zero() -> None:
 
 def test_keyboard_copies_caller_buffer_for_each_instance() -> None:
     source = bytearray(b"keys")
-    first = Keyboard(source)
-    second = Keyboard(source)
+    first = Keyboard(source, ticks_per_action=1)
+    second = Keyboard(source, ticks_per_action=1)
 
     source[0] = ord("X")
-    assert [first.read(0) for _ in range(4)] == list(b"keys")
-    assert [second.read(0) for _ in range(4)] == list(b"keys")
+    for keyboard in (first, second):
+        values = []
+        for _ in range(4):
+            values.append(keyboard.read(0))
+            keyboard.tick()
+            keyboard.tick()
+        assert values == list(b"keys")
 
 
 def test_machine_forwards_keyboard_buffer_to_cpu_reads(tmp_path: Path) -> None:

@@ -9,6 +9,9 @@ class Device(ABC):
     @abstractmethod
     def write(self, offset: Address, value: Byte) -> None: ...
 
+    @abstractmethod
+    def tick(self) -> None: ...
+
 
 class ROM(Device):
     def __init__(self, program: bytes, size_in_kb: int = 1) -> None:
@@ -25,6 +28,9 @@ class ROM(Device):
     def write(self, offset, value) -> None:
         raise WriteToRomError
 
+    def tick(self) -> None:
+        pass
+
 
 class RAM(Device):
     def __init__(self, size_in_kb: int = 1) -> None:
@@ -36,6 +42,9 @@ class RAM(Device):
     def write(self, offset, value) -> None:
         self.memory[offset] = value
 
+    def tick(self) -> None:
+        pass
+
 
 class Terminal(Device):
     def __init__(self, tracing_mode: bool) -> None:
@@ -45,12 +54,15 @@ class Terminal(Device):
         return 0x00  # Success message
 
     def write(self, offset, value):
-        if offset == 0x00:  # Only print at 0x0800 (or what ever the first address is)
+        if offset == 0x00:  # Only the first device offset prints.
             print(chr(value), end="")
 
             if self.TRACING_MODE:
                 print("")  # Print line break after each character in tracing mode
                 # so that it doesnt mix with the tracing output of the CPU
+
+    def tick(self) -> None:
+        pass
 
 
 class Keyboard(Device):
@@ -59,10 +71,13 @@ class Keyboard(Device):
     DATA_REGISTER = 0x0000
     STATUS_REGISTER = 0x0001
 
-    def __init__(self, test_buffer: bytearray | bytes | str | None = None) -> None:
+    def __init__(self, test_buffer: bytearray | bytes | str | None = None, ticks_per_action: int = 1000) -> None:
         self.memory = bytearray(KB)
         self.buffer = self._init_buffer(test_buffer)
-        self._write_buffer_head_to_memory()
+        # self._write_buffer_head_to_memory()
+
+        self._ticks_per_keypress = ticks_per_action
+        self._ticks_left_till_keypress = ticks_per_action
 
     def _init_buffer(self, test_buffer: bytearray | bytes | str | None):
         if isinstance(test_buffer, str):
@@ -90,7 +105,6 @@ class Keyboard(Device):
             value = self.memory[offset]
             self.memory[offset] = 0x00  # clear after read not to hold phantom data
             self._update_status(self.QUEUE_EMPTY)
-            self._write_buffer_head_to_memory()
             return value
 
         elif offset == self.STATUS_REGISTER:
@@ -101,3 +115,11 @@ class Keyboard(Device):
 
     def write(self, offset: Address, value: Byte) -> None:
         return
+
+    def tick(self) -> None:
+        if self._ticks_left_till_keypress > 0:
+            self._ticks_left_till_keypress -= 1
+
+        if self._ticks_left_till_keypress == 0 and self.memory[self.STATUS_REGISTER] == self.QUEUE_EMPTY:
+            self._write_buffer_head_to_memory()
+            self._ticks_left_till_keypress = self._ticks_per_keypress

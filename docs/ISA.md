@@ -10,8 +10,10 @@ This describes the behavior implemented by the CPU and assembler. Programs are a
 | `PC` | 16-bit program counter, starts at `0x0000` |
 | `SP` | 16-bit stack pointer, starts at `0x2000` |
 | Mode | Starts in kernel mode unless `start_mode` selects user mode. |
-| Zero flag (`Z`) | Starts clear. `CMP`/`CMPI` set it for equal values; `ADD`/`ADDI`/`SUB` set it when the 8-bit result is zero. `MOV` leaves it unchanged. Trap frames save and restore it. |
+| Zero flag (`Z`) | Starts clear. `CMP`/`CMPI` set it for equal values; `ADD`/`ADDI`/`SUB`/`SUBI` set it when the 8-bit result is zero. `MOV` leaves it unchanged. Trap frames save and restore it. |
 | Word byte order | Big-endian: high byte first, then low byte |
+
+The address ranges and allocation constants below are maintained in `memmap.py`; it is the source of truth for the map.
 
 Default address map:
 
@@ -24,7 +26,7 @@ Default address map:
 | `0xF400`–`0xF7FF` | 1 KiB keyboard device | Kernel-only; data and status registers are at offsets `0` and `1` |
 | `0xF800`–`0xFFFF` | Unmapped | Access faults with `BusFault` |
 
-The terminal prints a character when offset `0` is written; reads return `0x00`. The keyboard is kernel-only, like every address at or above `0xF000`. Its data register is at offset `0`, and its status register is at offset `1` (`1` means a byte is waiting, `0` means the queue is empty). Reading data consumes that byte and loads the next queued byte, if any; an empty data read returns `0`. A queued `0x00` is a real byte and can be distinguished from an empty queue only by checking status first. Writes are ignored, and reads of other keyboard offsets return `0`.
+The terminal prints a character when offset `0` is written; reads return `0x00`. The keyboard is kernel-only, like every address at or above `0xF000`. Its data register is at offset `0`, and its status register is at offset `1` (`1` means a byte is waiting, `0` means empty). Reading status has no side effect. Reading data returns and consumes the waiting byte, then clears status; an empty data read returns `0`. A queued `0x00` is a real byte and can be distinguished from an empty queue only by checking status first. Writes are ignored, and reads of other keyboard offsets return `0`. The first queued byte is ready at construction. Each subsequent byte becomes ready after `ticks_per_action` device ticks have elapsed and the previous byte has been read. `CPU.run()` advances all devices once per instruction step, including a step that delivers a trap.
 
 The stack grows down from `SP = 0x2000`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x2000` is a valid empty-stack boundary, not a RAM byte. Stack bytes occupy `0x1000`–`0x1FFF`.
 
@@ -86,6 +88,8 @@ Sizes include the opcode byte. `Z` is the only flag.
 | `MOV` | `13` | register, register | 3 | — | No | Copy the source register into the destination without changing `Z`. |
 | `SETSP` | `14` | high-byte register, low-byte register | 3 | — | Yes | Set `SP` from the two registers; the result must be within RAM stack bounds. |
 | `GETSP` | `15` | high-byte register, low-byte register | 3 | — | Yes | Copy `SP` into the two registers, high byte first. |
+| `LDA` | `16` | register, addr16 | 4 | — | No | Load a byte from an absolute address. |
+| `SUBI` | `17` | register, imm8 | 3 | `Z` | No | Subtract the immediate byte modulo 256 and set `Z` if the result is zero. |
 
 For `STORE`, `JUMP`, `JZ`, `JNZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` forms its address as `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
 
@@ -162,6 +166,18 @@ Example: `SETSP R1, R2` → `14 01 02`
 Layout: opcode, high-byte register, low-byte register.
 
 Example: `GETSP R1, R2` → `15 01 02`
+
+### `LDA`
+
+Layout: opcode, destination register, address high byte, address low byte.
+
+Example: `LDA R0, 0x1234` → `16 00 12 34`
+
+### `SUBI`
+
+Layout: opcode, destination/source register, immediate byte.
+
+Example: `SUBI R0, 1` → `17 00 01`
 
 ### `ADD`
 
@@ -258,7 +274,7 @@ Stack faults from `RETI` leave the frame, `SP`, mode, flags, and registers uncha
 
 ### Print a zero-terminated ROM string
 
-This is the loop assembled from `asm/hello_rom.asm`. The pointer begins at the label `msg`; the loop reads and prints bytes until it reads the terminator. The final jump skips the inline string data.
+This standalone loop demonstrates printing a zero-terminated ROM string. The pointer begins at the label `msg`; the loop reads and prints bytes until it reads the terminator. The final jump skips the inline string data.
 
 ```asm
 TERMINAL = 0xF000
@@ -344,13 +360,13 @@ This prints `AB`; `emit` is at `0x000D`.
 
 - Arithmetic is 8-bit and wraps modulo 256. There is no carry, borrow, or signedness flag.
 - The only flag is `Z`; conditional jumps are `JZ` and `JNZ`.
-- `ADDI` and `CMPI` provide immediate forms; there is no `SUBI`. The low-byte wrap technique works only for increments of `+1`: `ADDI low, 1` must be followed immediately by `JNZ` so `Z` can signal the wrap. There is still no carry flag; other pointer increments need explicit handling in software.
+- `ADDI`, `SUBI`, and `CMPI` provide immediate forms. The low-byte wrap technique works only for increments of `+1`: `ADDI low, 1` must be followed immediately by `JNZ` so `Z` can signal the wrap. There is still no carry flag; other pointer increments need explicit handling in software.
 - `LDR` uses two 8-bit registers for an address. Arithmetic on those registers does not carry between bytes.
 - There are no indirect jumps/calls, stack-frame instructions, or general-purpose 16-bit registers.
 - There is no automatic kernel/handler installation: the program image must provide its vector and any boot code needed to enter user mode.
 - Trap frames use the same RAM stack as `PUSH`/`CALL`; nested traps consume another three bytes each.
-- No instruction reads `SP`, so a handler cannot locate the saved `PC` relative to the current stack pointer using only the ISA. User stack overflow can prevent delivery of the resulting stack fault and cause a `DoubleFault`.
-- Terminal reads return `0x00`; writes at offset `0` print a character. Reading the keyboard data register consumes the waiting byte and advances the queue; check the status register to distinguish a queued `0x00` from an empty queue.
+- `GETSP` and `SETSP` are privileged stack-pointer access instructions. User stack overflow can prevent delivery of the resulting stack fault and cause a `DoubleFault`.
+- Terminal reads return `0x00`; writes at offset `0` print a character. Reading the keyboard data register consumes the waiting byte; check the status register to distinguish a queued `0x00` from an empty queue. Queued keys are separated by device ticks.
 
 ## 8. Adding an Instruction
 

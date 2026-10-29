@@ -24,3 +24,16 @@ def test_unmapped_bus_access_raises() -> None:
 def test_bus_rejects_values_above_one_byte() -> None:
     with pytest.raises(InvalidByteValue):
         Bus().write(0x0000, 0x100)
+
+
+def test_bus_tick_reaches_every_registered_device() -> None:
+    bus = Bus()
+    first = RecordingDevice()
+    second = RecordingDevice()
+    bus.register_device(0x0000, 0x10, first)
+    bus.register_device(0x0100, 0x10, second)
+
+    bus.tick()
+
+    assert first.ticks == 1
+    assert second.ticks == 1

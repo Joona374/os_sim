@@ -23,6 +23,7 @@ SYS_EXIT = 2
 SYS_PRINT_STRING = 3
 SYS_READ_CHAR = 4
 SYS_YIELD = 5
+SYS_KEY_READY = 6
 
 INVALID_SYSCALL_ERROR = 0xEE
 
@@ -110,6 +111,9 @@ syscall:
 
     CMPI R0, SYS_YIELD
     JZ yield
+
+    CMPI R0, SYS_KEY_READY
+    JZ check_key_ready
     
     LOAD R0, INVALID_SYSCALL_ERROR      ; this is an error code (that im too lazy to check for :D)
     JUMP trap_done
@@ -237,8 +241,6 @@ switch_to_a:
     STORE R1, CURRENT_PID
     JUMP resume_process
 
-
-
 resume_process:
     LDA R1, CURRENT_PID
 
@@ -249,6 +251,10 @@ resume_process:
     JZ resume_b
 
     JUMP machine_fault
+
+check_key_ready:
+    LDA R0, KEYBOARD_FLAGS
+    JUMP trap_done
 
 resume_a:
     LDA R1, A_SP_HIGH

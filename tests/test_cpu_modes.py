@@ -70,6 +70,51 @@ def test_halt_is_a_privileged_operation() -> None:
     assert Opcode.HALT in isa.PRIVILEGED_OPERATIONS
 
 
+@pytest.mark.parametrize(
+    ("opcode", "operands"),
+    [(Opcode.GETSP, bytes([0, 1])), (Opcode.SETSP, bytes([0, 1]))],
+    ids=["getsp", "setsp"],
+)
+def test_user_mode_stack_pointer_instructions_fault_without_side_effects(opcode: Opcode, operands: bytes) -> None:
+    cpu, _ = build_machine(bytes([opcode.value]) + operands, start_mode=CpuMode.USER)
+    cpu.regs = [0x12, 0x34, 0x56, 0x78]
+    cpu.SP = RAM_END - 4
+    cpu.zero_flag = True
+    registers = cpu.regs.copy()
+    initial_sp = cpu.SP
+    frame = [cpu.bus.read(initial_sp + offset) for offset in range(4)]
+
+    with pytest.raises(PrivilegedOperationViolation) as error:
+        cpu.step()
+
+    assert error.value.operation == opcode
+    assert (cpu.PC, cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == (0, initial_sp, CpuMode.USER, True, registers)
+    assert [cpu.bus.read(initial_sp + offset) for offset in range(4)] == frame
+
+
+def test_user_lda_cannot_read_keyboard_region() -> None:
+    cpu, _ = build_machine(
+        bytes([Opcode.LDA.value, 2, 0xF4, 0x00]),
+        start_mode=CpuMode.USER,
+    )
+    cpu.regs = [0x11, 0x22, 0xA5, 0x44]
+
+    with pytest.raises(PrivilegedMemoryAccessViolation) as error:
+        cpu.step()
+
+    assert error.value.address == 0xF400
+    assert cpu.PC == 0
+    assert cpu.regs == [0x11, 0x22, 0xA5, 0x44]
+
+
+def test_cpu_run_ticks_once_for_each_executed_instruction() -> None:
+    cpu, device = build_machine(assembled("LOAD R0, 1\nHALT"))
+
+    cpu.run()
+
+    assert device.ticks == 2
+
+
 def test_user_mode_halt_faults_without_halting_or_advancing_pc() -> None:
     cpu, _ = build_machine(assembled("HALT"), start_mode=CpuMode.USER)
 

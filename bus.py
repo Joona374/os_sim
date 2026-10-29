@@ -26,3 +26,7 @@ class Bus():
 
         region = self._find_region(address)
         region.device.write(region.to_offset(address), value)
+
+    def tick(self) -> None:
+        for region in self.address_map:
+            region.device.tick()

@@ -1,6 +1,8 @@
+from types import SimpleNamespace
+
 from bus import Bus
 from cpu import CPU
-from device import RAM, ROM
+from device import Keyboard, RAM, ROM
 from memmap import (
     RAM_SIZE,
     RAM_START,
@@ -19,6 +21,7 @@ class RecordingDevice:
         self.memory: dict[int, int] = {}
         self.writes: list[tuple[int, int]] = []
         self.reads: int = 0
+        self.ticks: int = 0
 
     def read(self, offset: int) -> int:
         self.reads += 1
@@ -27,6 +30,9 @@ class RecordingDevice:
     def write(self, offset: int, value: int) -> None:
         self.writes.append((offset, value))
         self.memory[offset] = value
+
+    def tick(self) -> None:
+        self.ticks += 1
 
 
 def build_machine(
@@ -42,6 +48,7 @@ def build_machine(
     bus.register_device(TERMINAL_START, TERMINAL_END - TERMINAL_START, recording_device)
     return (
         CPU(
+            SimpleNamespace(keyboard=Keyboard()),
             bus,
             trace_mode=trace_mode,
             start_mode=start_mode,

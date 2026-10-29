@@ -283,3 +283,132 @@ def test_each_opcode_has_layout_and_cpu_handler() -> None:
         )
     }
     assert rows == {opcode.name: opcode.value for opcode in Opcode}
+
+
+@pytest.mark.parametrize(
+    ("initial", "immediate", "expected", "initial_flag", "expected_flag"),
+    [
+        (7, 5, 2, True, False),
+        (0, 1, 0xFF, True, False),
+        (5, 5, 0, False, True),
+        (0xFF, 0, 0xFF, False, False),
+    ],
+    ids=["normal", "wraps-under-zero", "result-zero", "subtract-zero"],
+)
+def test_subi_wraps_result_sets_zero_flag_and_preserves_other_registers(initial: int, immediate: int, expected: int, initial_flag: bool, expected_flag: bool) -> None:
+    cpu, _ = build_machine(bytes([Opcode.SUBI.value, 1, immediate]))
+    cpu.regs = [0x11, initial, 0x33, 0x44]
+    cpu.zero_flag = initial_flag
+
+    cpu.step()
+
+    assert cpu.regs == [0x11, expected, 0x33, 0x44]
+    assert cpu.zero_flag is expected_flag
+    assert cpu.PC == 3
+
+
+def test_lda_loads_absolute_rom_and_ram_addresses() -> None:
+    rom_cpu, _ = build_machine(bytes([Opcode.LDA.value, 0, 0, 0]))
+    rom_cpu.zero_flag = True
+    rom_cpu.step()
+    assert rom_cpu.regs[0] == Opcode.LDA.value
+    assert rom_cpu.zero_flag is True
+
+    ram_cpu, _ = build_machine(bytes([Opcode.LDA.value, 0, RAM_START >> 8, RAM_START & 0xFF]))
+    ram_cpu.bus.write(RAM_START, 0x5A)
+    ram_cpu.zero_flag = True
+    ram_cpu.step()
+
+    assert ram_cpu.regs[0] == 0x5A
+    assert ram_cpu.zero_flag is True
+    assert ram_cpu.PC == 4
+
+
+def test_lda_reads_last_ram_address() -> None:
+    address = RAM_END - 1
+    cpu, _ = build_machine(bytes([Opcode.LDA.value, 3, address >> 8, address & 0xFF]))
+    cpu.bus.write(address, 0xA5)
+
+    cpu.step()
+
+    assert cpu.regs[3] == 0xA5
+
+
+@pytest.mark.parametrize(
+    ("opcode", "operands"),
+    [
+        (Opcode.SUBI, bytes([4, 1])),
+        (Opcode.LDA, bytes([4, 0, 0])),
+        (Opcode.GETSP, bytes([4, 1])),
+        (Opcode.SETSP, bytes([0, 4])),
+    ],
+    ids=["subi", "lda", "getsp", "setsp"],
+)
+def test_new_instruction_invalid_register_fault_is_side_effect_free(opcode: Opcode, operands: bytes) -> None:
+    cpu, _ = build_machine(bytes([opcode.value]) + operands)
+    cpu.regs = [0x11, 0x22, 0x33, 0x44]
+    cpu.zero_flag = True
+    cpu.SP -= 2
+    registers = cpu.regs.copy()
+    initial = (cpu.SP, cpu.mode, cpu.zero_flag, registers.copy())
+    memory = [cpu.bus.read(address) for address in range(RAM_START, RAM_END)]
+
+    with pytest.raises(InvalidCpuRegister):
+        cpu.step()
+
+    assert cpu.PC == 0
+    assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
+    assert [cpu.bus.read(address) for address in range(RAM_START, RAM_END)] == memory
+
+
+def test_getsp_copies_high_byte_then_low_byte() -> None:
+    cpu, _ = build_machine(bytes([Opcode.GETSP.value, 1, 2]))
+    cpu.SP = RAM_START + 0x23
+    cpu.zero_flag = True
+
+    cpu.step()
+
+    assert cpu.regs[1:3] == [RAM_START >> 8, (RAM_START + 0x23) & 0xFF]
+    assert cpu.SP == RAM_START + 0x23
+    assert cpu.zero_flag is True
+    assert cpu.PC == 3
+
+
+@pytest.mark.parametrize("new_sp", [RAM_START, RAM_END], ids=["ram-start", "ram-end"])
+def test_setsp_accepts_ram_stack_boundaries(new_sp: int) -> None:
+    cpu, _ = build_machine(bytes([Opcode.SETSP.value, 0, 1]))
+    cpu.regs[:2] = [new_sp >> 8, new_sp & 0xFF]
+    cpu.zero_flag = True
+
+    cpu.step()
+
+    assert cpu.SP == new_sp
+    assert cpu.zero_flag is True
+    assert cpu.PC == 3
+
+
+def test_setsp_outside_ram_faults_without_side_effects() -> None:
+    cpu, _ = build_machine(bytes([Opcode.SETSP.value, 0, 1]))
+    cpu.regs = [0x20, 0x01, 0x33, 0x44]
+    cpu.zero_flag = True
+    cpu.SP -= 2
+    initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())
+    memory = [cpu.bus.read(address) for address in range(RAM_START, RAM_END)]
+
+    with pytest.raises(MachineFault):
+        cpu.step()
+
+    assert cpu.PC == 0
+    assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
+    assert [cpu.bus.read(address) for address in range(RAM_START, RAM_END)] == memory
+
+
+def test_lda_unmapped_address_faults_without_changing_destination() -> None:
+    cpu, _ = build_machine(bytes([Opcode.LDA.value, 2, 0x80, 0x00]))
+    cpu.regs = [0x11, 0x22, 0xA5, 0x44]
+
+    with pytest.raises(MachineFault):
+        cpu.step()
+
+    assert cpu.PC == 0
+    assert cpu.regs == [0x11, 0x22, 0xA5, 0x44]

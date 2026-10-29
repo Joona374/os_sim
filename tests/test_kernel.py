@@ -4,7 +4,7 @@ import re
 import pytest
 
 from assembler import assemble
-from memmap import KEYBOARD_START, RAM_END, TERMINAL_START
+from memmap import KEYBOARD_START, RAM_END, STACK_A_END, TERMINAL_START
 from machine import Machine
 from tps import CpuMode
 from conftest import CANONICAL_UNMAPPED_ADDRESS
@@ -12,8 +12,12 @@ from conftest import CANONICAL_UNMAPPED_ADDRESS
 KERNEL_PATH = Path(__file__).resolve().parents[1] / "asm" / "kernel.asm"
 
 
-def kernel_source(main_body: str, initial_flags: int = 1) -> str:
-    source = KERNEL_PATH.read_text() + "\nmain:\n" + main_body
+def kernel_source(
+    main_body: str,
+    initial_flags: int = 1,
+    main_b_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
+) -> str:
+    source = KERNEL_PATH.read_text() + "\nmain_a:\n" + main_body + "\nmain_b:\n" + main_b_body
     return source.replace(
         "LOAD R2, 1\n    PUSH R2",
         f"LOAD R2, {initial_flags}\n    PUSH R2",
@@ -21,7 +25,12 @@ def kernel_source(main_body: str, initial_flags: int = 1) -> str:
     )
 
 
-def assemble_kernel(main_body: str, message: str | None = None, message_address: int | None = None) -> bytes:
+def assemble_kernel(
+    main_body: str,
+    message: str | None = None,
+    message_address: int | None = None,
+    main_b_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
+) -> bytes:
     def render(padding: int, include_probe: bool) -> str:
         body = main_body + "\nJUMP after_test\n"
         if message is not None:
@@ -29,7 +38,7 @@ def assemble_kernel(main_body: str, message: str | None = None, message_address:
                 body += ".byte " + ", ".join("0" for _ in range(padding)) + "\n"
             body += f'message:\n.string "{message}"\n'
         body += "after_test:\nJUMP after_test\n"
-        source = kernel_source(body)
+        source = kernel_source(body, main_b_body=main_b_body)
         return source + ("\nprobe:\nJUMP message\n" if include_probe else "")
 
     if message_address is None:
@@ -51,8 +60,9 @@ def build_kernel(
     message: str | None = None,
     message_address: int | None = None,
     keyboard_buffer: bytearray | bytes | str | None = None,
+    main_b_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
 ) -> tuple[Machine, bytes]:
-    image = assemble_kernel(main_body, message, message_address)
+    image = assemble_kernel(main_body, message, message_address, main_b_body)
     image_path = tmp_path / "kernel_test.hex"
     image_path.write_text(image.hex(" "))
     return Machine(str(image_path), handle_machine_faults=True, keyboard_buffer=keyboard_buffer), image
@@ -78,7 +88,7 @@ def assert_cpu_is_polling(cpu, steps: int = 2000) -> None:
         pcs.append(cpu.PC)
         cpu.step()
     assert cpu.halted is False
-    assert pcs[-5:] == pcs[-10:-5]
+    assert pcs[-3:] == pcs[-6:-3]
 
 
 def run_until_syscall_returns(machine: Machine, returns: int = 1) -> None:
@@ -126,7 +136,7 @@ def test_kernel_print_string_short_empty_and_preserves_user_state(tmp_path: Path
     assert capsys.readouterr().out == "hello"
     message_address = image.index(b"hello\x00")
     assert machine.cpu.regs == [0, message_address >> 8, message_address & 0xFF, 0xA5]
-    assert machine.cpu.SP == RAM_END
+    assert machine.cpu.SP == STACK_A_END
 
 
 def test_kernel_print_string_empty_returns_zero_without_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -136,7 +146,7 @@ def test_kernel_print_string_empty_returns_zero_without_output(tmp_path: Path, c
 
     assert capsys.readouterr().out == ""
     assert machine.cpu.regs[0] == 0
-    assert machine.cpu.SP == RAM_END
+    assert machine.cpu.SP == STACK_A_END
 
 
 @pytest.mark.parametrize("length", [300, 520], ids=["crosses-one-boundary", "crosses-two-boundaries"])
@@ -153,9 +163,9 @@ def test_kernel_print_string_walks_across_boundaries(tmp_path: Path, capsys: pyt
 @pytest.mark.parametrize(
     ("message_address", "text", "boundary_bytes"),
     [
-        (0x00FF, "ABC", {0x00FF: ord("A"), 0x0100: ord("B"), 0x0101: ord("C"), 0x0102: 0}),
-        (0x00FF, "A", {0x00FF: ord("A"), 0x0100: 0}),
-        (0x00FE, "AB", {0x00FE: ord("A"), 0x00FF: ord("B"), 0x0100: 0}),
+        (0x02FF, "ABC", {0x02FF: ord("A"), 0x0300: ord("B"), 0x0301: ord("C"), 0x0302: 0}),
+        (0x02FF, "A", {0x02FF: ord("A"), 0x0300: 0}),
+        (0x02FE, "AB", {0x02FE: ord("A"), 0x02FF: ord("B"), 0x0300: 0}),
     ],
     ids=["first-byte-at-00ff", "terminator-at-0100", "last-character-at-00ff"],
 )
@@ -199,7 +209,7 @@ def test_kernel_prints_string_twice_after_reloading_only_r0(tmp_path: Path, caps
 
     assert capsys.readouterr().out == "twicetwice"
     assert machine.cpu.regs[0] == 0
-    assert machine.cpu.SP == RAM_END
+    assert machine.cpu.SP == STACK_A_END
 
 
 def test_kernel_print_r1_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -211,7 +221,7 @@ def test_kernel_print_r1_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixt
     run_until_syscall_returns(machine)
 
     assert capsys.readouterr().out == "Q"
-    assert machine.cpu.regs == [0, ord("Q"), 1, 0]
+    assert machine.cpu.regs == [0, ord("Q"), 0, 0]
 
 
 @pytest.mark.parametrize("zero_flag", [False, True], ids=["clear", "set"])
@@ -223,7 +233,7 @@ def test_kernel_read_char_returns_key_and_preserves_state(tmp_path: Path, zero_f
     run_until_syscall_returns(machine)
 
     assert machine.cpu.regs == [ord("K"), 0x11, 0x22, 0x33]
-    assert machine.cpu.SP == RAM_END
+    assert machine.cpu.SP == STACK_A_END
     assert machine.cpu.zero_flag is zero_flag
 
 
@@ -235,7 +245,7 @@ def test_kernel_read_char_returns_queued_keys_in_order(tmp_path: Path) -> None:
     run_until_syscall_returns(machine, returns=2)
 
     assert machine.cpu.regs == [ord("B"), 0x11, 0x22, 0x33]
-    assert machine.cpu.SP == RAM_END
+    assert machine.cpu.SP == STACK_A_END
     assert machine.cpu.zero_flag is True
 
 
@@ -245,7 +255,7 @@ def test_kernel_read_char_returns_queued_nul(tmp_path: Path) -> None:
     run_until_syscall_returns(machine)
 
     assert machine.cpu.regs[0] == 0
-    assert machine.cpu.SP == RAM_END
+    assert machine.cpu.SP == STACK_A_END
 
 
 def test_kernel_read_char_with_empty_queue_keeps_polling(tmp_path: Path) -> None:
@@ -260,7 +270,7 @@ def test_printer_echoes_keys_through_newline_then_exits(tmp_path: Path, capsys: 
     machine.cpu.run()
 
     # The kernel's E exit marker is temporary.
-    assert capsys.readouterr().out == "hi\nE"
+    assert capsys.readouterr().out == "hi\nPE"
     assert machine.cpu.halted is True
 
 
@@ -270,7 +280,7 @@ def test_printer_echo_does_not_treat_nul_as_empty_input(tmp_path: Path, capsys: 
     machine.cpu.run()
 
     # The kernel's E exit marker is temporary.
-    assert capsys.readouterr().out == "\x00\nE"
+    assert capsys.readouterr().out == "\x00\nPE"
     assert machine.cpu.halted is True
 
 
@@ -372,3 +382,184 @@ def test_kernel_terminal_constant_matches_memmap() -> None:
 
     assert terminal is not None
     assert int(terminal.group(1), 0) == TERMINAL_START
+
+
+def test_two_processes_alternate_with_yield_and_last_exit_halts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main_a = """
+LOAD R1, 'A'
+LOAD R2, 2
+a_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+SUBI R2, 1
+LOAD R0, SYS_YIELD
+SYSCALL
+CMPI R2, 0
+JNZ a_loop
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    main_b = """
+LOAD R1, 'B'
+LOAD R2, 2
+b_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+SUBI R2, 1
+LOAD R0, SYS_YIELD
+SYSCALL
+CMPI R2, 0
+JNZ b_loop
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    machine, _ = build_kernel(tmp_path, main_a, main_b_body=main_b)
+
+    machine.cpu.run()
+
+    assert capsys.readouterr().out == "ABABE"
+    assert machine.cpu.halted is True
+
+
+def test_lone_yield_returns_success_after_other_process_exits(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main_a = """
+LOAD R0, SYS_YIELD
+SYSCALL
+LOAD R0, SYS_YIELD
+SYSCALL
+CMPI R0, 0
+JNZ failed
+LOAD R1, 'A'
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+LOAD R0, SYS_EXIT
+SYSCALL
+failed:
+LOAD R1, '!'
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    machine, _ = build_kernel(tmp_path, main_a)
+
+    machine.cpu.run()
+
+    assert capsys.readouterr().out == "AE"
+    assert machine.cpu.halted is True
+
+
+def test_mixed_depth_yields_return_zero_after_partner_exits(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main_a = """
+LOAD R2, 2
+LOAD R1, 'A'
+a_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+SUBI R2, 1
+LOAD R0, SYS_YIELD
+SYSCALL
+CMPI R2, 0
+JNZ a_loop
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    main_b = """
+LOAD R1, 'B'
+LOAD R2, 2
+b_direct_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+LOAD R0, SYS_YIELD
+SYSCALL
+SUBI R2, 1
+JNZ b_direct_loop
+LOAD R2, 3
+b_sub_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+CALL b_yielder
+CMPI R0, 0
+JZ b_result_ok
+LOAD R1, '!'
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+LOAD R1, 'B'
+b_result_ok:
+SUBI R2, 1
+JNZ b_sub_loop
+LOAD R0, SYS_EXIT
+SYSCALL
+b_yielder:
+LOAD R0, SYS_YIELD
+SYSCALL
+RET
+"""
+    machine, _ = build_kernel(tmp_path, main_a, main_b_body=main_b)
+
+    machine.cpu.run()
+
+    output = capsys.readouterr().out
+    assert output == "ABABBBBE"
+    assert "!" not in output
+    assert machine.cpu.halted is True
+
+
+def test_key_ready_and_read_char_interleave_with_other_process(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main_a = """
+LOAD R3, 0
+poll_key:
+LOAD R0, SYS_KEY_READY
+SYSCALL
+CMPI R0, 1
+JNZ yield_and_poll
+LOAD R0, SYS_READ_CHAR
+SYSCALL
+MOV R1, R0
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+ADDI R3, 1
+CMPI R3, 2
+JZ finish
+LOAD R0, SYS_YIELD
+SYSCALL
+JUMP poll_key
+yield_and_poll:
+LOAD R0, SYS_YIELD
+SYSCALL
+JUMP poll_key
+finish:
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    main_b = """
+LOAD R1, 'B'
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+LOAD R0, SYS_YIELD
+SYSCALL
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    machine, _ = build_kernel(
+        tmp_path,
+        main_a,
+        keyboard_buffer=b"ab",
+        main_b_body=main_b,
+    )
+
+    for _ in range(2000):
+        machine.cpu.step()
+        if machine.keyboard.read(1) == 0:
+            break
+    else:
+        pytest.fail("kernel did not consume the first keyboard key")
+
+    machine.keyboard._ticks_per_keypress = 100
+    machine.keyboard._ticks_left_till_keypress = 100
+    machine.cpu.run()
+
+    output = capsys.readouterr().out
+    assert output == "aBbE"
+    assert output.index("a") < output.index("B") < output.index("b")
+    assert machine.cpu.halted is True

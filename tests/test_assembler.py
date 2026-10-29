@@ -97,6 +97,11 @@ def test_new_instruction_encodings_accept_constants_and_label_bytes() -> None:
     )
 
 
+def test_stack_pointer_and_absolute_memory_instruction_encodings() -> None:
+    source = "GETSP R0, R1\nSETSP R2, R3\nLDA R1, 0xABCD\nSUBI R2, 0xFE"
+    assert b"".join(assemble(source)) == bytes([0x15, 0, 1, 0x14, 2, 3, 0x16, 1, 0xAB, 0xCD, 0x17, 2, 0xFE])
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -112,9 +117,16 @@ def test_new_instruction_encodings_accept_constants_and_label_bytes() -> None:
         "JNZ 0, 1\n",
     ],
     ids=[
-        "cmpi-too-large", "cmpi-negative", "addi-too-large", "addi-negative",
-        "cmpi-bad-register", "addi-bad-register", "jnz-missing-operand",
-        "cmpi-missing-operand", "addi-extra-operand", "jnz-extra-operand",
+        "cmpi-too-large",
+        "cmpi-negative",
+        "addi-too-large",
+        "addi-negative",
+        "cmpi-bad-register",
+        "addi-bad-register",
+        "jnz-missing-operand",
+        "cmpi-missing-operand",
+        "addi-extra-operand",
+        "jnz-extra-operand",
     ],
 )
 def test_new_instructions_reject_invalid_operands(source: str) -> None:
@@ -153,7 +165,7 @@ def test_include_places_kernel_first_and_exports_its_constants(tmp_path: Path) -
     repository = Path(__file__).resolve().parents[1]
     (tmp_path / "kernel.asm").write_text((repository / "asm" / "kernel.asm").read_text())
     main_path = tmp_path / "main.asm"
-    source = '.include "kernel.asm"\nmain:\nSTORE R0, TERMINAL\nLOAD R0, SYS_READ_CHAR\n'
+    source = '.include "kernel.asm"\nmain_b:\nHALT\nmain_a:\nSTORE R0, TERMINAL\nLOAD R0, SYS_READ_CHAR\n'
 
     program = b"".join(assemble(source, filename=str(main_path), base_dir=str(tmp_path)))
 

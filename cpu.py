@@ -1,4 +1,5 @@
 from time import sleep
+from typing import TYPE_CHECKING
 
 from bus import Bus
 from exceptions import (
@@ -17,14 +18,17 @@ from isa import Opcode, NUM_REGISTERS, PRIVILEGED_OPERATIONS
 from memmap import RAM_START, RAM_END, KERNEL_ONLY_START, SYSCALL_TRAP_VECTOR, PRIV_FAULT_VECTOR, BUS_FAULT_VECTOR, MACHINE_FAULT_VECTOR, KERNEL_DATA_START
 
 class CPU:
+    if TYPE_CHECKING:
+        from machine import Machine
 
-    def __init__(self, bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False, slow_mode: bool = False) -> None:
+    def __init__(self, parent: "Machine", bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False, slow_mode: bool = False) -> None:
         # TRACING
         self.TRACE_MODE: bool = trace_mode
         self.SLOW_MODE: bool = slow_mode
         self.handle_machine_faults = handle_machine_faults
         self.bytes_for_operation: list[Byte] = []
 
+        self.parent = parent
         self.bus = bus
         self.regs: list[Byte] = [0] * NUM_REGISTERS
 
@@ -65,6 +69,8 @@ class CPU:
             self.step()
 
     def step(self):
+        self.bus.tick()
+
         start_pc = self.PC
         if self.TRACE_MODE:
             self.bytes_for_operation = []
@@ -97,7 +103,10 @@ class CPU:
         regs = " ".join(f"r{i}={v:02X}" for i, v in enumerate(self.regs))
         mode = "K" if self.mode == CpuMode.KERNEL else "U"
         pid = self._bus_read(KERNEL_DATA_START)  # Current process happens to live here
-        print(f"{pc:04X}  {raw:<12} {name:<7} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X} M={mode} PID={pid}")
+        keyboard_ticks = f"{self.parent.keyboard._ticks_left_till_keypress}/{self.parent.keyboard._ticks_per_keypress}"
+        keyboard_status = f"{self.parent.keyboard.memory[0x0001]:04X}"
+
+        print(f"{pc:04X}  {raw:<12} {name:<7} | {regs} Z={int(self.zero_flag) } SP={self.SP:04X} M={mode} PID={pid} | KB-TICKS={keyboard_ticks} KB-STATUS={keyboard_status}")
 
     ############# Cpu helpers #############
 
