@@ -4,11 +4,18 @@ import re
 import pytest
 
 from cpu import CPU
-from exceptions import InvalidCpuRegister, MachineFault
+from exceptions import (
+    BusFaultUnmappedAddress,
+    InvalidCpuRegister,
+    MachineFault,
+    PrivilegedMemoryAccessViolation,
+    WriteToRomError,
+)
 from isa import LAYOUT, Opcode
-from memmap import RAM_END, RAM_START
+from memmap import KERNEL_ONLY_START, RAM_END, RAM_START
+from tps import CpuMode
 
-from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine, run_program
+from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine, run_cpu, run_program
 
 def test_load_sets_register() -> None:
     cpu = run_program(bytes([0x02, 0x01, 0xA5, 0x01]))
@@ -18,6 +25,84 @@ def test_load_sets_register() -> None:
 def test_store_writes_register_to_address() -> None:
     cpu = run_program(bytes([0x02, 0x02, 0xA5, 0x03, 0x02, RAM_START >> 8, RAM_START & 0xFF, 0x01]))
     assert cpu.bus.read(RAM_START) == 0xA5
+
+
+def test_str_stores_register_and_ldr_reads_it_back() -> None:
+    program = bytes([
+        Opcode.LOAD.value, 1, 0xA5,
+        Opcode.LOAD.value, 2, RAM_START >> 8,
+        Opcode.LOAD.value, 3, RAM_START & 0xFF,
+        Opcode.STR.value, 1, 2, 3,
+        Opcode.LDR.value, 0, 2, 3,
+        Opcode.HALT.value,
+    ])
+    cpu = run_program(program)
+
+    assert cpu.bus.read(RAM_START) == 0xA5
+    assert cpu.regs[0] == 0xA5
+
+
+def test_str_writes_address_with_low_byte_at_ff() -> None:
+    address = 0x12FF
+    cpu, _ = build_machine(bytes([Opcode.STR.value, 0, 1, 2]))
+    cpu.regs = [0x5A, address >> 8, address & 0xFF, 0]
+    cpu.zero_flag = True
+
+    cpu.step()
+
+    assert cpu.bus.read(address) == 0x5A
+    assert cpu.bus.read(address + 1) == 0
+    assert cpu.zero_flag is True
+
+
+@pytest.mark.parametrize(
+    ("address", "mode", "fault_type"),
+    [
+        (KERNEL_ONLY_START, CpuMode.USER, PrivilegedMemoryAccessViolation),
+        (CANONICAL_UNMAPPED_ADDRESS, CpuMode.KERNEL, BusFaultUnmappedAddress),
+        (0x0000, CpuMode.KERNEL, WriteToRomError),
+    ],
+    ids=["user-kernel-boundary", "unmapped", "rom-write"],
+)
+def test_str_memory_faults_restore_pc_and_have_no_side_effects(
+    address: int, mode: CpuMode, fault_type: type[Exception]
+) -> None:
+    cpu, terminal = build_machine(bytes([Opcode.STR.value, 0, 1, 2]), start_mode=mode)
+    cpu.regs = [0xA5, address >> 8, address & 0xFF, 0x77]
+    cpu.zero_flag = True
+    initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())
+    ram = [cpu.bus.read(location) for location in range(RAM_START, RAM_END)]
+
+    with pytest.raises(fault_type):
+        cpu.step()
+
+    assert cpu.PC == 0
+    assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
+    assert [cpu.bus.read(location) for location in range(RAM_START, RAM_END)] == ram
+    assert terminal.writes == []
+
+
+@pytest.mark.parametrize(
+    ("source", "high", "low"),
+    [(4, 1, 2), (0, 4, 2), (0, 1, 4)],
+    ids=["invalid-source", "invalid-high-register", "invalid-low-register"],
+)
+def test_str_invalid_register_fault_restores_pc_and_has_no_side_effects(
+    source: int, high: int, low: int
+) -> None:
+    cpu, terminal = build_machine(bytes([Opcode.STR.value, source, high, low]))
+    cpu.regs = [0x11, 0x22, 0x33, 0x44]
+    cpu.zero_flag = True
+    initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())
+    ram = [cpu.bus.read(location) for location in range(RAM_START, RAM_END)]
+
+    with pytest.raises(InvalidCpuRegister):
+        cpu.step()
+
+    assert cpu.PC == 0
+    assert (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs) == initial
+    assert [cpu.bus.read(location) for location in range(RAM_START, RAM_END)] == ram
+    assert terminal.writes == []
 
 
 def test_jump_skips_code_and_supports_nonzero_high_byte() -> None:
@@ -243,13 +328,13 @@ def test_invalid_register_raises_machine_fault(instruction: bytes) -> None:
 def test_store_into_rom_raises_machine_fault() -> None:
     cpu, _ = build_machine(bytes([0x02, 0, 0xAA, 0x03, 0, 0, 0, 1]))
     with pytest.raises(MachineFault):
-        cpu.run()
+        run_cpu(cpu)
 
 
 def test_fetch_and_ldr_read_from_unmapped_addresses_raise_machine_fault() -> None:
     fetch_cpu, _ = build_machine(bytes([0x04, CANONICAL_UNMAPPED_ADDRESS >> 8, CANONICAL_UNMAPPED_ADDRESS & 0xFF]))
     with pytest.raises(MachineFault):
-        fetch_cpu.run()
+        run_cpu(fetch_cpu)
 
     read_program = bytes(
         [
@@ -267,7 +352,7 @@ def test_fetch_and_ldr_read_from_unmapped_addresses_raise_machine_fault() -> Non
     )
     read_cpu, _ = build_machine(read_program)
     with pytest.raises(MachineFault):
-        read_cpu.run()
+        run_cpu(read_cpu)
 
 
 def test_each_opcode_has_layout_and_cpu_handler() -> None:
@@ -389,7 +474,8 @@ def test_setsp_accepts_ram_stack_boundaries(new_sp: int) -> None:
 
 def test_setsp_outside_ram_faults_without_side_effects() -> None:
     cpu, _ = build_machine(bytes([Opcode.SETSP.value, 0, 1]))
-    cpu.regs = [0x20, 0x01, 0x33, 0x44]
+    invalid_sp = RAM_END + 1
+    cpu.regs = [invalid_sp >> 8, invalid_sp & 0xFF, 0x33, 0x44]
     cpu.zero_flag = True
     cpu.SP -= 2
     initial = (cpu.SP, cpu.mode, cpu.zero_flag, cpu.regs.copy())

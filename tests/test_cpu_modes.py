@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 import isa
@@ -14,13 +16,15 @@ from exceptions import (
 from isa import Opcode
 from memmap import (
     KERNEL_ONLY_START,
+    KEYBOARD_START,
     RAM_END,
     RAM_START,
     TERMINAL_START,
 )
+from machine import Machine
 from tps import CpuMode
 
-from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine
+from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine, run_cpu
 
 def assembled(source: str) -> bytes:
     return b"".join(assemble(source))
@@ -94,7 +98,7 @@ def test_user_mode_stack_pointer_instructions_fault_without_side_effects(opcode:
 
 def test_user_lda_cannot_read_keyboard_region() -> None:
     cpu, _ = build_machine(
-        bytes([Opcode.LDA.value, 2, 0xF4, 0x00]),
+        bytes([Opcode.LDA.value, 2, KEYBOARD_START >> 8, KEYBOARD_START & 0xFF]),
         start_mode=CpuMode.USER,
     )
     cpu.regs = [0x11, 0x22, 0xA5, 0x44]
@@ -102,7 +106,7 @@ def test_user_lda_cannot_read_keyboard_region() -> None:
     with pytest.raises(PrivilegedMemoryAccessViolation) as error:
         cpu.step()
 
-    assert error.value.address == 0xF400
+    assert error.value.address == KEYBOARD_START
     assert cpu.PC == 0
     assert cpu.regs == [0x11, 0x22, 0xA5, 0x44]
 
@@ -110,9 +114,25 @@ def test_user_lda_cannot_read_keyboard_region() -> None:
 def test_cpu_run_ticks_once_for_each_executed_instruction() -> None:
     cpu, device = build_machine(assembled("LOAD R0, 1\nHALT"))
 
-    cpu.run()
+    run_cpu(cpu)
 
     assert device.ticks == 2
+
+
+def test_kernel_mode_str_prints_to_terminal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    program = assembled(
+        f"LOAD R0, 'S'\nLOAD R1, {TERMINAL_START >> 8}\n"
+        f"LOAD R2, {TERMINAL_START & 0xFF}\nSTR R0, R1, R2\nHALT"
+    )
+    image_path = tmp_path / "str_terminal.hex"
+    image_path.write_text(program.hex(" "))
+    machine = Machine(str(image_path))
+
+    run_cpu(machine.cpu)
+
+    assert capsys.readouterr().out == "S"
 
 
 def test_user_mode_halt_faults_without_halting_or_advancing_pc() -> None:

@@ -15,16 +15,19 @@ from exceptions import (
 )
 from tps import Address, Byte, Word, CpuMode
 from isa import Opcode, NUM_REGISTERS, PRIVILEGED_OPERATIONS
-from memmap import RAM_START, RAM_END, KERNEL_ONLY_START, SYSCALL_TRAP_VECTOR, PRIV_FAULT_VECTOR, BUS_FAULT_VECTOR, MACHINE_FAULT_VECTOR, KERNEL_DATA_START
+from memmap import BOOT_STACK_END, RAM_START, RAM_END, KERNEL_ONLY_START, SYSCALL_TRAP_VECTOR, PRIV_FAULT_VECTOR, BUS_FAULT_VECTOR, MACHINE_FAULT_VECTOR, KERNEL_DATA_START
 
 class CPU:
     if TYPE_CHECKING:
         from machine import Machine
 
-    def __init__(self, parent: "Machine", bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False, slow_mode: bool = False) -> None:
+    def __init__(
+        self, parent: "Machine", bus: Bus, trace_mode: bool = False, start_mode: CpuMode = CpuMode.KERNEL, handle_machine_faults: bool = False, slow_mode: bool = False, step_mode: bool = False
+    ) -> None:
         # TRACING
         self.TRACE_MODE: bool = trace_mode
         self.SLOW_MODE: bool = slow_mode
+        self.STEP_MODE: bool = step_mode
         self.handle_machine_faults = handle_machine_faults
         self.bytes_for_operation: list[Byte] = []
 
@@ -33,7 +36,7 @@ class CPU:
         self.regs: list[Byte] = [0] * NUM_REGISTERS
 
         self.PC: Address = 0x0000
-        self.SP: Address = RAM_END
+        self.SP: Address = BOOT_STACK_END
         self.halted: bool = False
         self.zero_flag: bool = False
         self.mode: CpuMode = start_mode
@@ -62,9 +65,13 @@ class CPU:
             Opcode.GETSP: self._process_getsp,
             Opcode.LDA: self._process_lda,
             Opcode.SUBI: self._process_subi,
+            Opcode.STR: self._process_str,
         }
 
     def run(self) -> None:
+        if self.STEP_MODE:
+            print("Press ENTER to step the CPU")
+
         while not self.halted:
             self.step()
 
@@ -96,6 +103,8 @@ class CPU:
                 self._print_trace(start_pc, op_code)
             if self.SLOW_MODE:
                 sleep(0.1)
+            if self.STEP_MODE:
+                input("")
 
     def _print_trace(self, pc: int, op_code: Opcode | None) -> None:
         name = op_code.name if op_code else "???"
@@ -434,3 +443,17 @@ class CPU:
 
         self._write_to_register(reg, sub_result)
         self.zero_flag = sub_result == 0
+
+    def _process_str(self):
+        source_reg = self._fetch_byte()
+        self._validate_register(source_reg)
+
+        hi_reg = self._fetch_byte()
+        lo_reg = self._fetch_byte()
+
+        addr_hi = self._read_from_register(hi_reg)
+        addr_lo = self._read_from_register(lo_reg)
+        addr = (addr_hi << 8) | addr_lo
+
+        value = self._read_from_register(source_reg)
+        self._bus_write(addr, value)

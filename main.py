@@ -11,6 +11,7 @@ def main():
     START_MODE = CpuMode.KERNEL
     HANDLE_MACHINE_FAULTS = False
     SLOW_MODE = False
+    STEP_MODE = False
 
     if "--trace" in sys.argv:
         TRACKING_ENABLED = True
@@ -28,6 +29,10 @@ def main():
         SLOW_MODE = True
         sys.argv.remove("--slow-mode")
 
+    if "--step-mode" in sys.argv:
+        STEP_MODE = True
+        sys.argv.remove("--step-mode")
+
     if len(sys.argv) == 1:
         program_path = DEFAULT_PROGRAM
     elif len(sys.argv) == 2:
@@ -35,7 +40,9 @@ def main():
     else:
         sys.exit("usage: python3 main.py <program_name>")
 
-    machine = Machine(program_path, trace_mode=TRACKING_ENABLED, start_mode=START_MODE, handle_machine_faults=HANDLE_MACHINE_FAULTS, keyboard_buffer="TESTI\n", slow_mode=SLOW_MODE)
+    machine = Machine(
+        program_path, trace_mode=TRACKING_ENABLED, start_mode=START_MODE, handle_machine_faults=HANDLE_MACHINE_FAULTS, keyboard_buffer="TESTI\n", slow_mode=SLOW_MODE, step_mode=STEP_MODE
+    )
     try:
         machine.cpu.run()
     except DoubleFault as fault:

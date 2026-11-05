@@ -26,7 +26,7 @@ from isa import Opcode
 from machine import Machine
 from tps import CpuMode
 
-from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine
+from conftest import CANONICAL_UNMAPPED_ADDRESS, build_machine, run_cpu
 
 def assembled(source: str) -> bytes:
     return b"".join(assemble(source))
@@ -43,7 +43,7 @@ def test_fault_delivery_still_ticks_devices_once_for_the_step() -> None:
     image[MACHINE_FAULT_VECTOR] = Opcode.HALT.value
     cpu, device = build_machine(bytes(image), handle_machine_faults=True)
 
-    cpu.run()
+    run_cpu(cpu)
 
     assert cpu.PC == MACHINE_FAULT_VECTOR + 1
     assert cpu.halted is True
@@ -147,7 +147,7 @@ def test_machine_fault_handling_disabled_propagates_from_run() -> None:
     cpu, _ = build_machine(assembled(f"STORE R0, {CANONICAL_UNMAPPED_ADDRESS:#06x}"))
 
     with pytest.raises(BusFaultUnmappedAddress):
-        cpu.run()
+        run_cpu(cpu)
 
     assert cpu.PC == 0
 
@@ -372,7 +372,11 @@ def test_rom_kernel_prints_fault_message_and_halts(
 ) -> None:
     kernel_path = Path(__file__).resolve().parents[1] / "asm" / "kernel.asm"
     source = kernel_path.read_text()
-    source += "\nmain_a:\n" + snippet + "\nmain_b:\nLOAD R0, SYS_EXIT\nSYSCALL\n"
+    source += (
+        "\nmain_a:\n" + snippet
+        + "\nmain_b:\nLOAD R0, SYS_EXIT\nSYSCALL"
+        + "\nmain_c:\nLOAD R0, SYS_EXIT\nSYSCALL\n"
+    )
     source = source.replace(
         "LOAD R2, 1\n    PUSH R2",
         f"LOAD R2, {initial_flags}\n    PUSH R2",
@@ -386,7 +390,7 @@ def test_rom_kernel_prints_fault_message_and_halts(
     hex_path.write_text(image.hex(" "))
     machine = Machine(str(hex_path), handle_machine_faults=True)
 
-    machine.cpu.run()
+    run_cpu(machine.cpu, max_steps=100000)
 
     assert output in capsys.readouterr().out
     assert machine.cpu.halted is True
@@ -422,6 +426,7 @@ def test_main_parses_and_removes_flags(tmp_path: Path, monkeypatch: pytest.Monke
             handle_machine_faults: bool,
             keyboard_buffer: bytearray | bytes | str | None = None,
             slow_mode: bool = False,
+            **kwargs: object,
         ) -> None:
             captured.update(
                 path=path,

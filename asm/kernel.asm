@@ -4,17 +4,14 @@ STACK_A_END = 0x1800
 STACK_B_END = 0x1C00
 BOOT_STACK_END = 0x2000
 
-CURRENT_PID = 0x1000
-A_SP_HIGH = 0x1001
-A_SP_LOW = 0x1002
-A_STATE = 0x1003
-B_SP_HIGH = 0x1004
-B_SP_LOW = 0x1005
-B_STATE = 0x1006
+CURRENT_PROCESS = 0x1000    ; PID = 0x10 or 0x14 or 0x18 etc. Stores the LOW Byte of the adress where the record is on the process map
+N_OF_PROCS = 0x1001
+TABLE_END = 0x1002          ; Low byte of address to the state byte of the first unused process
 
-A_PROCESS_PID = 0x00
-B_PROCESS_PID = 0x01
+FIRST_PROC_LO_BYTE = 0x10
+PROC_TABLE_HI_BYTE = 0x10
 
+PROC_START_FLAGS = 0x01     ; 01 Zero cleared, User mode bit
 STATE_ALIVE = 0x01
 STATE_DEAD = 0x00
 
@@ -26,6 +23,10 @@ SYS_YIELD = 5
 SYS_KEY_READY = 6
 
 INVALID_SYSCALL_ERROR = 0xEE
+
+BOOT_RET_HI_SP_ADDR = 0x1200
+BOOT_RET_LO_SP_ADDR = 0x1201
+BOOT_PROC_TABLE_ENTRY_ADDR = 0x1202
 
 KEYBOARD_BUFFER = 0xF400
 KEYBOARD_FLAGS = 0xF401
@@ -41,56 +42,88 @@ JUMP bus_fault
 JUMP machine_fault
 
 boot:
-    ; B Process
-    LOAD R0 >STACK_B_END    ; Set SP to b stack
-    LOAD R1 <STACK_B_END
-    SETSP R0, R1
+    LOAD R1, 0x10
+    STORE R1, TABLE_END ; We want to store the address for the first unusued / un-inited process in the proc table
 
-    LOAD R2, <main_b        ; Load stack frame for main_b program
-    PUSH R2
-    LOAD R2, >main_b
-    PUSH R2
-    LOAD R2, 1
-    PUSH R2
-
-    LOAD R3, 0x00           ; Pre set R1-R3 values
-    PUSH R3
-    PUSH R3
-    PUSH R3
-
-    GETSP R0, R1
-    STORE R0, B_SP_HIGH     ; Add process b to the process table
-    STORE R1, B_SP_LOW
-    LOAD R3, STATE_ALIVE    ; Alive
-    STORE R3, B_STATE
-
-
-    ; A Process
-    LOAD R0 >STACK_A_END    ; Set SP to a stack
-    LOAD R1 <STACK_A_END
-    SETSP R0, R1
-
-    LOAD R2, <main_a        ; Load stack frame for main_a program
-    PUSH R2
     LOAD R2, >main_a
-    PUSH R2
-    LOAD R2, 1
-    PUSH R2
+    LOAD R3, <main_a
+    CALL setup_proc
 
-    LOAD R3, 0x00           ; Pre set R1-R3 values
+    LOAD R2, >main_b
+    LOAD R3, <main_b
+    CALL setup_proc
+
+    LOAD R2, >main_c
+    LOAD R3, <main_c
+    CALL setup_proc
+    
+    LOAD R1, 0x10               ; Start with the first process (First entry in process )
+    STORE R1, CURRENT_PROCESS  
+    JUMP resume_process         ; FROM HERE ON OUT THIS PATH IS STILL COMPLETELY BROKEN
+
+
+; SETUP PROC (R2 and R3 store the address of the program in memory, eg R2 >main, R3 <main)
+setup_proc:
+    GETSP R0, R1                ; We need to store the SP to return back to since during this call we will use SETSP that messes up CALL -> RET stack
+    STORE R0, BOOT_RET_HI_SP_ADDR
+    STORE R1, BOOT_RET_LO_SP_ADDR
+
+    PUSH R2                     ; R2-R3 (Hi-Lo) contains the starting address of a process
+    PUSH R3                     ; PUsh to store them while we need the registers for work
+
+    LDA R1, TABLE_END           ; This is the first unused entry in the process table
+
+start_table_entry:              ; R1 holds the low byte for first address of this proc entry in the table
+    LOAD R0, PROC_TABLE_HI_BYTE
+    LOAD R2, STATE_ALIVE        ; Init as alive
+    STR R2, R0, R1              ; Write alive to first bit of entry
+
+    ADDI R1, 0x08               ; R1 now holds the end of stack (0x1400-0x17FF) (starting SP) HI byte 0x18
+    LOAD R3, 0x00               ; R1 + R3 = SP like 0x1800 = End of first process stack
+
+    ; 4th byte for procc is unused for now
+
+build_stack_frame:
+    MOV R0, R1                  ; Move the SP to other registers to make way for POP
+    MOV R1, R3
+
+    POP R3                      ; Program start LO byte
+    POP R2                      ; Program start HI byte
+
+
+    SETSP R0, R1                ; Only set SP after POP so we dont loose the address for start of proc
+
+    PUSH R3                     ; Load stack frame for program, PC LO
+    PUSH R2                     ; PC HI
+    LOAD R2, PROC_START_FLAGS
+    PUSH R2                     ; 01 bit flags Zero, Mode
+
+    LOAD R3, 0x00               ; Pre set R1-R3 values
     PUSH R3
     PUSH R3
     PUSH R3
 
-    GETSP R0, R1            ; Add process a to the process table
-    STORE R0, A_SP_HIGH     
-    STORE R1, A_SP_LOW
-    LOAD R3, STATE_ALIVE    ; Alive
-    STORE R3, A_STATE
+update_the_process_table:
+    GETSP R0, R1                ; SP High byte for 0th process is now 0x17, LO is 0xFA = 250
+    
+    LOAD R2, PROC_TABLE_HI_BYTE ; 0x10
+    LDA R3, TABLE_END           ; This now points to this entry in the table (we += 4 at the end of this method)
 
-    LOAD R3, A_PROCESS_PID  ; Make A active process
-    STORE R3, CURRENT_PID   
-    JUMP resume_process
+    ADDI R3, 0x01               ; Table entry for 0th process SP hi byte is 0x11
+    STR R0, R2, R3              ; Store the SP Hi 0x13 at 0x1011
+
+    ADDI R3, 0x01               ; Table entry for 0th process SP low byte is 0x12
+    STR R1, R2, R3              ; Store the SP Lo 0xFA at 0x1012
+
+    LDA R0, BOOT_RET_HI_SP_ADDR
+    LDA R1, BOOT_RET_LO_SP_ADDR
+    SETSP R0, R1
+
+    LDA R3, TABLE_END
+    ADDI R3, 0x04
+    STORE R3,TABLE_END
+
+    RET
 
 syscall:
     PUSH R1
@@ -130,39 +163,16 @@ print_r1:                   ; SYS_PRINT_R1
     JUMP trap_done
 
 exit:                       ; SYS_EXIT
-    LDA R0, CURRENT_PID
-
-    CMPI R0, A_PROCESS_PID
-    JZ exit_a
-
-    CMPI R0, B_PROCESS_PID
-    JZ exit_b
-
-    JUMP machine_fault
-
-exit_a:
-    LOAD R1, STATE_DEAD
-    STORE R1, A_STATE
-
-    LDA R1, B_STATE
-    CMPI R1, STATE_ALIVE
-    JZ switch_to_b
-
     LOAD R0, 0x45           ; print E just to show we exited
     STORE R0, TERMINAL
-    HALT
 
-exit_b:
     LOAD R1, STATE_DEAD
-    STORE R1, B_STATE
+    LOAD R2, PROC_TABLE_HI_BYTE
+    LDA R3, CURRENT_PROCESS
+    STR R1, R2, R3
 
-    LDA R1, A_STATE
-    CMPI R1, STATE_ALIVE
-    JZ switch_to_a
-
-    LOAD R0, 0x45           ; print E just to show we exited
-    STORE R0, TERMINAL
-    HALT
+    LOAD R0 SYS_YIELD
+    SYSCALL
 
 sys_print_string:           ; SYS_PRINT_STRING
     CALL print_string
@@ -194,81 +204,105 @@ poll_char:                  ; SYS_READ_CHAR
     LDA R0, KEYBOARD_BUFFER
     JUMP trap_done
 
-yield:                      ; SYS_YIELD
-    LDA R1, CURRENT_PID     ; R1 holds the currently active PID
+save_context_for_process:
+    ; 0. We would have needed to enter a trap similar to syscall so that PC LO, PC HI and Flags are already writen to stack, an SP moved to point to this. (Open question is if R1-R3 should also be pushed here?)
+    ; 1. Load CURRENT_PROCESS to register (value = eg. 0x10, 0x14, low byte of address for the entry in process table)
+    LOAD R0, PROC_TABLE_HI_BYTE
+    LDA R1, CURRENT_PROCESS
 
+    ; 2. GET SP into registers
     GETSP R2, R3
 
-    CMPI R1, A_PROCESS_PID
-    JZ yield_from_a
+    ; 3. Write SP HI into process table entry add + 1
+    ADDI R1, 0x01
+    STR R2, R0, R1
 
-    CMPI R1, B_PROCESS_PID
-    JZ yield_from_b
+    ; 5. Write SP LO into process table entry add + 2. These can later be used to return to this process.
+    ADDI R1, 0x01
+    STR R3, R0, R1
 
-    JUMP machine_fault
-
-yield_from_a:
-    LDA R1, B_STATE
-    CMPI R1, STATE_DEAD
-    JZ cancel_yield
-
-    STORE R2, A_SP_HIGH
-    STORE R3, A_SP_LOW
-
-    JUMP switch_to_b
-
-yield_from_b:
-    LDA R1, A_STATE
-    CMPI R1, STATE_DEAD
-    JZ cancel_yield
-
-    STORE R2, B_SP_HIGH
-    STORE R3, B_SP_LOW
-
-    JUMP switch_to_a
-
-cancel_yield:
-    LOAD R0, SUCCESS_CODE
-    JUMP trap_done
-
-switch_to_b:
-    LOAD R1, B_PROCESS_PID
-    STORE R1, CURRENT_PID
+    ; TODO: Figure out how to find the next process, increment CURRENT_PROCESS, and then call / jump to resume_process.
+    CALL find_and_set_next_process
     JUMP resume_process
 
-switch_to_a:
-    LOAD R1, A_PROCESS_PID
-    STORE R1, CURRENT_PID
-    JUMP resume_process
+    
+
+find_and_set_next_process:
+    ; 1. Load current process (0x10, 0x14, 0x18...)
+    LDA R0, CURRENT_PROCESS
+    LOAD R2, PROC_TABLE_HI_BYTE       ; We need this just so that we can do LDR PROC_TABLE_HI_BYTE + CURRENT_PROCESS to check process state
+
+    ; 2. Load max address  
+    LDA R1, TABLE_END
+
+    ; 3. Copy the starting process pid, so we know when we have checked every process and should quit
+    MOV R3, R0
+
+find_and_set_next_process_loop:
+    PUSH R3
+
+    ; 3. Increment current process += 4
+    ADDI R0, 0x04
+
+    ; 4. Compare current process and max address, if equal, jump to loopback 
+    CMP R0, R1
+    JZ find_and_set_next_process_loopback
+
+    ; 5. Get process state (PROC_TABLE_HI_BYTE + CURRENT_PROCESS)
+    LDR R3, R2, R0
+
+    ; 6. If state is NOT STATE_ALIVE jump back to top of loop
+    CMPI R3, STATE_ALIVE
+    POP R3
+    JZ find_and_set_next_process_loop_ret
+
+    ; 7. Check if we have checked every process and none was ALIVE
+    CMP R0, R3
+    JNZ find_and_set_next_process_loop
+    
+    ; 8. Entering here means we just checked the original process and it wasnt alive either, so there is no more alive processes and we should halt the whole machine / cpu
+    HALT
+
+find_and_set_next_process_loopback:
+    POP R3
+    LOAD R0, FIRST_PROC_LO_BYTE
+    SUBI R0, 0x04
+    JUMP find_and_set_next_process_loop
+
+find_and_set_next_process_loop_ret:
+    ; 7. If state is alive, return from this "function"
+    STORE R0, CURRENT_PROCESS 
+    RET
+
+yield:                      ; SYS_YIELD
+    JUMP save_context_for_process
 
 resume_process:
-    LDA R1, CURRENT_PID
+    ; 1. Find the address that stores the stack frame (that we get by yielding)
+    LOAD R0, PROC_TABLE_HI_BYTE
+    LDA R1, CURRENT_PROCESS
 
-    CMPI R1, A_PROCESS_PID
-    JZ resume_a
+    ; 2. Load SP HI to a register
+    ADDI R1, 0x01
+    LDR R2, R0, R1
 
-    CMPI R1, B_PROCESS_PID
-    JZ resume_b
+    ; 3. Load SP LO to a register
+    ADDI R1, 0x01
+    LDR R3, R0, R1
 
-    JUMP machine_fault
+    ; 6. SET SP, this now points to the stack frame for CURRENT_PROCESS
+    SETSP R2, R3
+
+    ; 7. LOAD R0, SUCCESS_CODE (OPTIONAL)
+    LOAD R0, SUCCESS_CODE
+
+    ; 8. Call trap_done to recover R1-R3, flags and finally CP to next instruction for CURRENT_PROCESS
+    JUMP trap_done
 
 check_key_ready:
     LDA R0, KEYBOARD_FLAGS
     JUMP trap_done
 
-resume_a:
-    LDA R1, A_SP_HIGH
-    LDA R2, A_SP_LOW
-    SETSP R1, R2
-    LOAD R0, SUCCESS_CODE
-    JUMP trap_done
-
-resume_b:
-    LDA R1, B_SP_HIGH
-    LDA R2, B_SP_LOW
-    SETSP R1, R2
-    LOAD R0, SUCCESS_CODE
-    JUMP trap_done
 
 ; FAULT HANDLERS
 
@@ -290,6 +324,31 @@ machine_fault:
     CALL print_string
     HALT
 
+; Utils
+r0_times_r1:                    ; This will mess R2, so push that first if needed
+    CMPI R0, 0x00               ; If either r0 or r1 == 0, return early as N x 0 = 0
+    JZ r0_times_r1_ret_zero
+    CMPI R1, 0x00
+    JZ r0_times_r1_ret_zero
+
+    MOV R2, R0                  ; We keep adding R2 to R0 r1 times
+    LOAD R0, 0x00
+
+r0_times_r1_loop:
+    CMPI R1, 0x00
+    JZ r0_times_r1_ret
+
+    ADD R0, R2
+    SUBI R1, 0x01
+    JUMP r0_times_r1_loop
+
+r0_times_r1_ret_zero:
+    LOAD R0, 0x00
+    RET
+
+r0_times_r1_ret:
+    RET
+
 ; KERNEL ROM STRINGS
 
 priv_fault_string:
@@ -300,3 +359,6 @@ bus_fault_string:
 
 machine_fault_string:
     .string "MACHINE FAULT"
+
+test_string:
+    .string "TEST STRING!\n"

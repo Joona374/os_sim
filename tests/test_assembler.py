@@ -102,6 +102,10 @@ def test_stack_pointer_and_absolute_memory_instruction_encodings() -> None:
     assert b"".join(assemble(source)) == bytes([0x15, 0, 1, 0x14, 2, 3, 0x16, 1, 0xAB, 0xCD, 0x17, 2, 0xFE])
 
 
+def test_str_encodes_source_and_address_registers() -> None:
+    assert b"".join(assemble("STR R1, R2, R3")) == bytes([0x18, 1, 2, 3])
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -165,14 +169,12 @@ def test_include_places_kernel_first_and_exports_its_constants(tmp_path: Path) -
     repository = Path(__file__).resolve().parents[1]
     (tmp_path / "kernel.asm").write_text((repository / "asm" / "kernel.asm").read_text())
     main_path = tmp_path / "main.asm"
-    source = '.include "kernel.asm"\nmain_b:\nHALT\nmain_a:\nSTORE R0, TERMINAL\nLOAD R0, SYS_READ_CHAR\n'
+    source = '.include "kernel.asm"\nmain_b:\nHALT\nmain_a:\n' "STORE R0, TERMINAL\nLOAD R0, SYS_READ_CHAR\nmain_c:\nHALT\n"
 
     program = b"".join(assemble(source, filename=str(main_path), base_dir=str(tmp_path)))
 
     assert program[0:15:3] == bytes([0x04] * 5)
-    assert program[-7:] == bytes(
-        [0x03, 0, TERMINAL_START >> 8, TERMINAL_START & 0xFF, 0x02, 0, 4]
-    )
+    assert program[-8:] == bytes([0x03, 0, TERMINAL_START >> 8, TERMINAL_START & 0xFF, 0x02, 0, 4, 0x01])
 
 
 def test_include_paths_are_relative_to_each_file_and_may_nest(tmp_path: Path) -> None:

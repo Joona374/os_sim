@@ -1,5 +1,6 @@
 from enum import Enum
 from token import OP
+from webbrowser import Opera
 
 NUM_REGISTERS = 4
 
@@ -28,6 +29,7 @@ class Opcode(Enum):
     GETSP = 0x15
     LDA = 0x16
     SUBI = 0x17
+    STR = 0x18
 
 PRIVILEGED_OPERATIONS = {Opcode.HALT, Opcode.RETI, Opcode.SETSP, Opcode.GETSP}
 
@@ -62,6 +64,7 @@ LAYOUT: dict[Opcode, list[Operand]] = {
     Opcode.GETSP: [Operand.REG, Operand.REG],
     Opcode.LDA: [Operand.REG, Operand.ADDR16],
     Opcode.SUBI: [Operand.REG, Operand.IMM8],
+    Opcode.STR: [Operand.REG, Operand.REG, Operand.REG],
 }
 
 OPERAND_SIZE: dict[Operand, int] = {

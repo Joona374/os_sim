@@ -8,7 +8,7 @@ This describes the behavior implemented by the CPU and assembler. Programs are a
 |---|---|
 | Registers | `R0`–`R3`, each 8-bit and initially zero |
 | `PC` | 16-bit program counter, starts at `0x0000` |
-| `SP` | 16-bit stack pointer, starts at `0x2000` |
+| `SP` | 16-bit stack pointer, starts at `BOOT_STACK_END` (`0x5000`) |
 | Mode | Starts in kernel mode unless `start_mode` selects user mode. |
 | Zero flag (`Z`) | Starts clear. `CMP`/`CMPI` set it for equal values; `ADD`/`ADDI`/`SUB`/`SUBI` set it when the 8-bit result is zero. `MOV` leaves it unchanged. Trap frames save and restore it. |
 | Word byte order | Big-endian: high byte first, then low byte |
@@ -20,15 +20,15 @@ Default address map:
 | Addresses | Device | Behavior |
 |---|---|---|
 | `0x0000`–`0x0FFF` | 4 KiB ROM | Program image, zero-padded; writes fault |
-| `0x1000`–`0x1FFF` | 4 KiB RAM | Read/write memory; stack is placed here |
-| `0x2000`–`0xEFFF` | Unmapped gap | Access faults with `BusFault` |
+| `0x1000`–`0x4FFF` | 16 KiB RAM | Read/write memory; kernel data and stacks are allocated here |
+| `0x5000`–`0xEFFF` | Unmapped gap | Access faults with `BusFault` |
 | `0xF000`–`0xF3FF` | 1 KiB terminal device | Writes print a character; reads return `0x00` |
 | `0xF400`–`0xF7FF` | 1 KiB keyboard device | Kernel-only; data and status registers are at offsets `0` and `1` |
 | `0xF800`–`0xFFFF` | Unmapped | Access faults with `BusFault` |
 
-The terminal prints a character when offset `0` is written; reads return `0x00`. The keyboard is kernel-only, like every address at or above `0xF000`. Its data register is at offset `0`, and its status register is at offset `1` (`1` means a byte is waiting, `0` means empty). Reading status has no side effect. Reading data returns and consumes the waiting byte, then clears status; an empty data read returns `0`. A queued `0x00` is a real byte and can be distinguished from an empty queue only by checking status first. Writes are ignored, and reads of other keyboard offsets return `0`. The first queued byte is ready at construction. Each subsequent byte becomes ready after `ticks_per_action` device ticks have elapsed and the previous byte has been read. `CPU.run()` advances all devices once per instruction step, including a step that delivers a trap.
+The terminal prints a character when offset `0` is written; reads return `0x00`. The keyboard is kernel-only, like every address at or above `0xF000`. Its data register is at offset `0`, and its status register is at offset `1` (`1` means a byte is waiting, `0` means empty). Reading status has no side effect. Reading data returns and consumes the waiting byte, then clears status; an empty data read returns `0`. A queued `0x00` is a real byte and can be distinguished from an empty queue only by checking status first. Writes are ignored, and reads of other keyboard offsets return `0`. The first queued byte is not preloaded: it becomes ready after `ticks_per_action` device ticks. Later bytes are delivered no sooner than another `ticks_per_action` ticks after the previous delivery, and only after that byte has been consumed. `CPU.run()` advances all devices once per instruction step, including a step that delivers a trap.
 
-The stack grows down from `SP = 0x2000`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x2000` is a valid empty-stack boundary, not a RAM byte. Stack bytes occupy `0x1000`–`0x1FFF`.
+The stack grows down from `SP = 0x5000`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x5000` is a valid empty-stack boundary, not a RAM byte. The kernel allocates `0x1000`–`0x13FF` for kernel data, `0x1400`–`0x4BFF` for the process-stack pool, and `0x4C00`–`0x4FFF` for the boot stack. The CPU begins at the top of the boot stack; process stack tops are initialized by the kernel.
 
 The CPU starts at `PC = 0x0000`. ROM begins with five three-byte absolute `JUMP` vectors; boot code begins at `0x000F`:
 
@@ -41,7 +41,7 @@ The CPU starts at `PC = 0x0000`. ROM begins with five three-byte absolute `JUMP`
 | `0x000C` | Other machine fault |
 | `0x000F` | Boot code begins after the vector slots |
 
-`HALT` and `RETI` are privileged instructions; they fault in user mode. User-mode data accesses and instruction fetches at or above the kernel-only boundary `0xF000` fault as privilege violations. Accesses to the unmapped gap below that boundary can still produce bus faults in user mode. ROM and RAM below `0xF000` are accessible to user mode; kernel mode has no address privilege restriction.
+`HALT`, `RETI`, `SETSP`, and `GETSP` are privileged instructions; they fault in user mode. User-mode data accesses and instruction fetches at or above the kernel-only boundary `0xF000` fault as privilege violations. Accesses to the unmapped gap below that boundary can still produce bus faults in user mode. ROM and RAM below `0xF000` are accessible to user mode; kernel mode has no address privilege restriction.
 
 ## 2. Assembly Syntax
 
@@ -80,7 +80,7 @@ Sizes include the opcode byte. `Z` is the only flag.
 | `POP` | `0B` | register | 2 | — | No | Pop one byte into a register. |
 | `CALL` | `0C` | addr16 | 3 | — | No | Push the return address, then jump. |
 | `RET` | `0D` | — | 1 | — | No | Pop a return address into `PC`. |
-| `SYSCALL` | `0E` | — | 1 | — | No | Syscall semantics are not specified in this reference yet. |
+| `SYSCALL` | `0E` | — | 1 | — | No | Enter the syscall trap vector; the kernel dispatcher is described in [KERNEL.md](KERNEL.md). |
 | `RETI` | `0F` | — | 1 | `Z` restored | Yes | Restore mode, `Z`, and `PC` from the three-byte trap frame. |
 | `JNZ` | `10` | addr16 | 3 | — | No | Jump if `Z` is clear. |
 | `CMPI` | `11` | register, imm8 | 3 | `Z` | No | Set `Z` if the register equals the immediate byte. |
@@ -90,8 +90,11 @@ Sizes include the opcode byte. `Z` is the only flag.
 | `GETSP` | `15` | high-byte register, low-byte register | 3 | — | Yes | Copy `SP` into the two registers, high byte first. |
 | `LDA` | `16` | register, addr16 | 4 | — | No | Load a byte from an absolute address. |
 | `SUBI` | `17` | register, imm8 | 3 | `Z` | No | Subtract the immediate byte modulo 256 and set `Z` if the result is zero. |
+| `STR` | `18` | source, high-address, low-address registers | 4 | — | No | Store a byte at the address formed by the two address registers. |
 
-For `STORE`, `JUMP`, `JZ`, `JNZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` forms its address as `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
+`STR` itself is not privileged, but its destination is checked like other data writes: user mode faults when the computed address is at or above `0xF000`. It does not change `Z`.
+
+For `STORE`, `JUMP`, `JZ`, `JNZ`, and `CALL`, `addr16` is encoded high byte first. `LDR` reads and `STR` writes at the address `(high_register << 8) | low_register`. `CALL` also saves the return address high byte at the new `SP`, then the low byte at `SP + 1`; `RET` reads them in that order.
 
 Each example below was passed to the project assembler; the bytes shown are its output.
 
@@ -178,6 +181,12 @@ Example: `LDA R0, 0x1234` → `16 00 12 34`
 Layout: opcode, destination/source register, immediate byte.
 
 Example: `SUBI R0, 1` → `17 00 01`
+
+### `STR`
+
+Layout: opcode, source register, address-high register, address-low register.
+
+Example: `STR R1, R2, R3` → `18 01 02 03`
 
 ### `ADD`
 
@@ -332,7 +341,7 @@ After `HALT`, the pointer registers contain `R1 = 0x05` and `R2 = 0x00`. `Z` is 
 
 ### Call a subroutine twice
 
-The same `emit` routine is called with two different values. Each call pushes the address after its `CALL`; `RET` restores it. The subroutine does not use extra stack space, and the stack returns to `0x2000` after each call.
+The same `emit` routine is called with two different values. Each call pushes the address after its `CALL`; `RET` restores it. The subroutine does not use extra stack space, and the stack returns to `0x5000` after each call.
 
 ```asm
 TERMINAL = 0xF000
@@ -362,6 +371,7 @@ This prints `AB`; `emit` is at `0x000D`.
 - The only flag is `Z`; conditional jumps are `JZ` and `JNZ`.
 - `ADDI`, `SUBI`, and `CMPI` provide immediate forms. The low-byte wrap technique works only for increments of `+1`: `ADDI low, 1` must be followed immediately by `JNZ` so `Z` can signal the wrap. There is still no carry flag; other pointer increments need explicit handling in software.
 - `LDR` uses two 8-bit registers for an address. Arithmetic on those registers does not carry between bytes.
+- `STR` stores through an address formed from two 8-bit registers, but the CPU provides no automatic address arithmetic or carry between those bytes.
 - There are no indirect jumps/calls, stack-frame instructions, or general-purpose 16-bit registers.
 - There is no automatic kernel/handler installation: the program image must provide its vector and any boot code needed to enter user mode.
 - Trap frames use the same RAM stack as `PUSH`/`CALL`; nested traps consume another three bytes each.

@@ -24,6 +24,7 @@ def build_machine(tmp_path: Path, program: bytes, keyboard_buffer=None, start_mo
 def test_keyboard_data_and_status_register_drain_queue_in_order() -> None:
     keyboard = Keyboard(bytearray(b"abc"), ticks_per_action=1)
 
+    keyboard.tick()
     assert keyboard.read(1) == 1
     assert keyboard.read(1) == 1
     assert keyboard.read(0) == ord("a")
@@ -40,6 +41,7 @@ def test_keyboard_data_and_status_register_drain_queue_in_order() -> None:
 @pytest.mark.parametrize("buffer", [b"xy", bytearray(b"xy"), "xy"])
 def test_keyboard_accepts_bytes_bytearray_and_ascii_string(buffer) -> None:
     keyboard = Keyboard(buffer, ticks_per_action=1)
+    keyboard.tick()
     assert keyboard.read(0) == ord("x")
     keyboard.tick()
     keyboard.tick()
@@ -50,7 +52,8 @@ def test_keyboard_accepts_bytes_bytearray_and_ascii_string(buffer) -> None:
 
 
 def test_keyboard_nul_is_distinguished_by_status() -> None:
-    keyboard = Keyboard(b"\x00")
+    keyboard = Keyboard(b"\x00", ticks_per_action=1)
+    keyboard.tick()
 
     assert keyboard.read(1) == 1
     assert keyboard.read(0) == 0
@@ -60,13 +63,19 @@ def test_keyboard_nul_is_distinguished_by_status() -> None:
 def test_keyboard_next_key_arrives_after_exact_tick_delay() -> None:
     keyboard = Keyboard(b"ab", ticks_per_action=3)
 
-    assert keyboard.read(0) == ord("a")
+    assert keyboard.read(1) == 0
     for _ in range(2):
         keyboard.tick()
         assert keyboard.read(1) == 0
 
     keyboard.tick()
 
+    assert keyboard.read(1) == 1
+    assert keyboard.read(0) == ord("a")
+    for _ in range(2):
+        keyboard.tick()
+        assert keyboard.read(1) == 0
+    keyboard.tick()
     assert keyboard.read(1) == 1
     assert keyboard.read(0) == ord("b")
 
@@ -81,15 +90,18 @@ def test_keyboard_waits_for_previous_key_read_even_after_delay() -> None:
     assert keyboard.read(1) == 0
 
     keyboard.tick()
+    assert keyboard.read(1) == 0
+    keyboard.tick()
 
     assert keyboard.read(1) == 1
     assert keyboard.read(0) == ord("b")
 
 
 def test_keyboard_ignores_all_writes_and_unknown_reads_return_zero() -> None:
-    keyboard = Keyboard(b"k")
+    keyboard = Keyboard(b"k", ticks_per_action=1)
     for offset in (0, 1, 2, 0x3FF):
         keyboard.write(offset, 0xA5)
+    keyboard.tick()
 
     assert keyboard.read(1) == 1
     assert keyboard.read(2) == 0
@@ -107,15 +119,16 @@ def test_keyboard_copies_caller_buffer_for_each_instance() -> None:
     for keyboard in (first, second):
         values = []
         for _ in range(4):
+            keyboard.tick()
             values.append(keyboard.read(0))
-            keyboard.tick()
-            keyboard.tick()
         assert values == list(b"keys")
 
 
 def test_machine_forwards_keyboard_buffer_to_cpu_reads(tmp_path: Path) -> None:
     program = assembled("LDR R2, R0, R1\nLDR R3, R0, R1\nLDR R2, R0, R1")
     machine = build_machine(tmp_path, program, bytearray(b"Q"))
+    machine.keyboard._ticks_per_keypress = 1
+    machine.keyboard._ticks_left_till_keypress = 1
     machine.cpu.regs[:2] = [KEYBOARD_START >> 8, 1]
 
     machine.cpu.step()
@@ -143,6 +156,7 @@ def test_user_cpu_cannot_read_keyboard(tmp_path: Path, offset: int) -> None:
         start_mode=CpuMode.USER,
     )
     machine.cpu.regs[:2] = [KEYBOARD_START >> 8, offset]
+    machine.keyboard._write_buffer_head_to_memory()
 
     with pytest.raises(PrivilegedMemoryAccessViolation):
         machine.cpu.step()

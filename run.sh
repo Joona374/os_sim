@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [ $# -lt 1 ]; then
-    echo "usage: ./run.sh <program_name> [--trace] [--user] [--handle-faults] [--slow-mode]" >&2
+    echo "usage: ./run.sh <program_name> [--trace] [--user] [--handle-faults] [--slow-mode] [--step-mode]" >&2
     exit 2
 fi
 

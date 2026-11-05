@@ -20,15 +20,12 @@ from memmap import (
     RAM_END,
     RAM_SIZE,
     RAM_START,
-    STACK_A_END,
-    STACK_A_SIZE,
-    STACK_A_START,
-    STACK_B_END,
-    STACK_B_SIZE,
-    STACK_B_START,
     BOOT_STACK_END,
     BOOT_STACK_SIZE,
     BOOT_STACK_START,
+    PROC_STACK_END,
+    PROC_STACK_SIZE,
+    PROC_STACK_START,
     RESET_VECTOR,
     ROM_END,
     ROM_SIZE,
@@ -66,7 +63,7 @@ def test_memmap_regions_and_vectors_are_consistent() -> None:
 def test_cpu_starts_at_reset_vector_with_empty_stack() -> None:
     cpu, _ = build_machine(bytes([0x01]))
 
-    assert cpu.SP == RAM_END
+    assert cpu.SP == BOOT_STACK_END
     assert cpu.PC == RESET_VECTOR
 
 
@@ -91,11 +88,10 @@ def test_memory_regions_are_ordered_and_do_not_overlap() -> None:
 
 
 def test_kernel_ram_blocks_are_contiguous_and_fill_ram() -> None:
-    assert [KERNEL_DATA_SIZE, STACK_A_SIZE, STACK_B_SIZE, BOOT_STACK_SIZE] == [KB] * 4
+    assert [KERNEL_DATA_SIZE, PROC_STACK_SIZE, BOOT_STACK_SIZE] == [KB, 14 * KB, KB]
     assert KERNEL_DATA_START == RAM_START
-    assert KERNEL_DATA_END == STACK_A_START
-    assert STACK_A_END == STACK_B_START
-    assert STACK_B_END == BOOT_STACK_START
+    assert KERNEL_DATA_END == PROC_STACK_START
+    assert PROC_STACK_END == BOOT_STACK_START
     assert BOOT_STACK_END == RAM_END
 
 
