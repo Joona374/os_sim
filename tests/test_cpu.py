@@ -28,14 +28,28 @@ def test_store_writes_register_to_address() -> None:
 
 
 def test_str_stores_register_and_ldr_reads_it_back() -> None:
-    program = bytes([
-        Opcode.LOAD.value, 1, 0xA5,
-        Opcode.LOAD.value, 2, RAM_START >> 8,
-        Opcode.LOAD.value, 3, RAM_START & 0xFF,
-        Opcode.STR.value, 1, 2, 3,
-        Opcode.LDR.value, 0, 2, 3,
-        Opcode.HALT.value,
-    ])
+    program = bytes(
+        [
+            Opcode.LOAD.value,
+            1,
+            0xA5,
+            Opcode.LOAD.value,
+            2,
+            RAM_START >> 8,
+            Opcode.LOAD.value,
+            3,
+            RAM_START & 0xFF,
+            Opcode.STR.value,
+            1,
+            2,
+            3,
+            Opcode.LDR.value,
+            0,
+            2,
+            3,
+            Opcode.HALT.value,
+        ]
+    )
     cpu = run_program(program)
 
     assert cpu.bus.read(RAM_START) == 0xA5
@@ -64,9 +78,7 @@ def test_str_writes_address_with_low_byte_at_ff() -> None:
     ],
     ids=["user-kernel-boundary", "unmapped", "rom-write"],
 )
-def test_str_memory_faults_restore_pc_and_have_no_side_effects(
-    address: int, mode: CpuMode, fault_type: type[Exception]
-) -> None:
+def test_str_memory_faults_restore_pc_and_have_no_side_effects(address: int, mode: CpuMode, fault_type: type[Exception]) -> None:
     cpu, terminal = build_machine(bytes([Opcode.STR.value, 0, 1, 2]), start_mode=mode)
     cpu.regs = [0xA5, address >> 8, address & 0xFF, 0x77]
     cpu.zero_flag = True
@@ -87,9 +99,7 @@ def test_str_memory_faults_restore_pc_and_have_no_side_effects(
     [(4, 1, 2), (0, 4, 2), (0, 1, 4)],
     ids=["invalid-source", "invalid-high-register", "invalid-low-register"],
 )
-def test_str_invalid_register_fault_restores_pc_and_has_no_side_effects(
-    source: int, high: int, low: int
-) -> None:
+def test_str_invalid_register_fault_restores_pc_and_has_no_side_effects(source: int, high: int, low: int) -> None:
     cpu, terminal = build_machine(bytes([Opcode.STR.value, source, high, low]))
     cpu.regs = [0x11, 0x22, 0x33, 0x44]
     cpu.zero_flag = True

@@ -119,13 +119,8 @@ def test_cpu_run_ticks_once_for_each_executed_instruction() -> None:
     assert device.ticks == 2
 
 
-def test_kernel_mode_str_prints_to_terminal(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    program = assembled(
-        f"LOAD R0, 'S'\nLOAD R1, {TERMINAL_START >> 8}\n"
-        f"LOAD R2, {TERMINAL_START & 0xFF}\nSTR R0, R1, R2\nHALT"
-    )
+def test_kernel_mode_str_prints_to_terminal(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    program = assembled(f"LOAD R0, 'S'\nLOAD R1, {TERMINAL_START >> 8}\n" f"LOAD R2, {TERMINAL_START & 0xFF}\nSTR R0, R1, R2\nHALT")
     image_path = tmp_path / "str_terminal.hex"
     image_path.write_text(program.hex(" "))
     machine = Machine(str(image_path))

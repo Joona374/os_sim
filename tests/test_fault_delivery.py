@@ -372,11 +372,7 @@ def test_rom_kernel_prints_fault_message_and_halts(
 ) -> None:
     kernel_path = Path(__file__).resolve().parents[1] / "asm" / "kernel.asm"
     source = kernel_path.read_text()
-    source += (
-        "\nmain_a:\n" + snippet
-        + "\nmain_b:\nLOAD R0, SYS_EXIT\nSYSCALL"
-        + "\nmain_c:\nLOAD R0, SYS_EXIT\nSYSCALL\n"
-    )
+    source += "\nmain_a:\n" + snippet + "\nmain_b:\nLOAD R0, SYS_EXIT\nSYSCALL" + "\nmain_c:\nLOAD R0, SYS_EXIT\nSYSCALL\n"
     source = source.replace(
         "LOAD R2, 1\n    PUSH R2",
         f"LOAD R2, {initial_flags}\n    PUSH R2",
