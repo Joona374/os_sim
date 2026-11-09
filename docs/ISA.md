@@ -30,7 +30,7 @@ The terminal prints a character when offset `0` is written; reads return `0x00`.
 
 The stack grows down from `SP = 0x5000`. `PUSH` writes at `SP - 1`; `POP` reads at `SP` then advances it. Thus `0x5000` is a valid empty-stack boundary, not a RAM byte. The kernel allocates `0x1000`–`0x13FF` for kernel data, `0x1400`–`0x4BFF` for the process-stack pool, and `0x4C00`–`0x4FFF` for the boot stack. The CPU begins at the top of the boot stack; process stack tops are initialized by the kernel.
 
-The CPU starts at `PC = 0x0000`. ROM begins with five three-byte absolute `JUMP` vectors; boot code begins at `0x000F`:
+The CPU starts at `PC = 0x0000`; it does not install interrupt vectors or a kernel. When an image includes `asm/kernel.asm` first, ROM begins with five three-byte absolute `JUMP` vectors and its boot code begins at `0x000F`:
 
 | Address | Purpose |
 |---:|---|
@@ -80,7 +80,7 @@ Sizes include the opcode byte. `Z` is the only flag.
 | `POP` | `0B` | register | 2 | — | No | Pop one byte into a register. |
 | `CALL` | `0C` | addr16 | 3 | — | No | Push the return address, then jump. |
 | `RET` | `0D` | — | 1 | — | No | Pop a return address into `PC`. |
-| `SYSCALL` | `0E` | — | 1 | — | No | Enter the syscall trap vector; the kernel dispatcher is described in [KERNEL.md](KERNEL.md). |
+| `SYSCALL` | `0E` | — | 1 | — | No | Enter the syscall trap vector. See [KERNEL.md](KERNEL.md) for syscall inputs, results, register clobbers, and blocking behavior. |
 | `RETI` | `0F` | — | 1 | `Z` restored | Yes | Restore mode, `Z`, and `PC` from the three-byte trap frame. |
 | `JNZ` | `10` | addr16 | 3 | — | No | Jump if `Z` is clear. |
 | `CMPI` | `11` | register, imm8 | 3 | `Z` | No | Set `Z` if the register equals the immediate byte. |
@@ -276,7 +276,6 @@ Stack faults from `RETI` leave the frame, `SP`, mode, flags, and registers uncha
 ## 5. Conventions (Not Enforced)
 
 - The kernel's `print_string` routine takes a zero-terminated string pointer in `R1:R2` (`R1` high byte, `R2` low byte). It clobbers `R0`, advances `R1` and `R2`, and leaves `R3` untouched; when `R2` wraps to zero, it increments `R1`. This is a software convention, not an ISA rule.
-- `asm/printer.asm` is the current echo sample and includes the kernel. The former `asm/hello_rom.asm` sample is not present in the current source tree, so there is no current sample using the older `R2:R3` pointer convention.
 - A routine must restore the stack to its entry position before `RET`. `RET` always consumes exactly two bytes; an unbalanced push/pop sequence makes it read the wrong return address.
 
 ## 6. Worked Examples

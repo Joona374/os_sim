@@ -17,16 +17,12 @@ def kernel_source(
     initial_flags: int = 1,
     main_b_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
     main_c_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
+    init_body: str = "JUMP main_a",
 ) -> str:
-    source = (
-        KERNEL_PATH.read_text()
-        + "\nmain_a:\n" + main_body
-        + "\nmain_b:\n" + main_b_body
-        + "\nmain_c:\n" + main_c_body
-    )
+    source = KERNEL_PATH.read_text() + "\ninit:\n" + init_body + "\nmain_a:\n" + main_body + "\nmain_b:\n" + main_b_body + "\nmain_c:\n" + main_c_body
     return source.replace(
-        "LOAD R2, 1\n    PUSH R2",
-        f"LOAD R2, {initial_flags}\n    PUSH R2",
+        "PROC_START_FLAGS = 0x01",
+        f"PROC_START_FLAGS = {initial_flags:#04x}",
         1,
     )
 
@@ -37,6 +33,7 @@ def assemble_kernel(
     message_address: int | None = None,
     main_b_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
     main_c_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
+    init_body: str = "JUMP main_a",
 ) -> bytes:
     def render(padding: int, include_probe: bool) -> str:
         body = main_body + "\nJUMP after_test\n"
@@ -45,7 +42,7 @@ def assemble_kernel(
                 body += ".byte " + ", ".join("0" for _ in range(padding)) + "\n"
             body += f'message:\n.string "{message}"\n'
         body += "after_test:\nJUMP after_test\n"
-        source = kernel_source(body, main_b_body=main_b_body, main_c_body=main_c_body)
+        source = kernel_source(body, main_b_body=main_b_body, main_c_body=main_c_body, init_body=init_body)
         return source + ("\nprobe:\nJUMP message\n" if include_probe else "")
 
     if message_address is None:
@@ -69,15 +66,16 @@ def build_kernel(
     keyboard_buffer: bytearray | bytes | str | None = None,
     main_b_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
     main_c_body: str = "LOAD R0, SYS_EXIT\nSYSCALL",
+    init_body: str = "JUMP main_a",
 ) -> tuple[Machine, bytes]:
-    image = assemble_kernel(main_body, message, message_address, main_b_body, main_c_body)
+    image = assemble_kernel(main_body, message, message_address, main_b_body, main_c_body, init_body)
     image_path = tmp_path / "kernel_test.hex"
     image_path.write_text(image.hex(" "))
     return Machine(str(image_path), handle_machine_faults=True, keyboard_buffer=keyboard_buffer), image
 
 
 def build_printer(tmp_path: Path, keyboard_buffer: bytes | str) -> Machine:
-    source_path = Path(__file__).resolve().parents[1] / "asm" / "printer.asm"
+    source_path = Path(__file__).resolve().parent / "fixtures" / "printer.asm"
     image = b"".join(
         assemble(
             source_path.read_text(),
@@ -104,6 +102,23 @@ def assert_cpu_is_polling(cpu, steps: int = 2000) -> None:
 
 def run_machine(machine: Machine, max_steps: int = 100000) -> None:
     run_cpu(machine.cpu, max_steps=max_steps)
+
+
+def spawn_init_body(*processes: str) -> str:
+    lines = []
+    for process in processes:
+        lines.extend(spawn_process_lines(process))
+    lines.append("JUMP main_a")
+    return "\n".join(lines)
+
+
+def spawn_process_lines(process: str) -> list[str]:
+    return [
+        f"LOAD R2, >{process}",
+        f"LOAD R3, <{process}",
+        "LOAD R0, SYS_SPAWN",
+        "SYSCALL",
+    ]
 
 
 def run_until_syscall_returns(machine: Machine, returns: int = 1) -> None:
@@ -321,10 +336,12 @@ def test_user_keyboard_read_faults_without_consuming_key(tmp_path: Path, capsys:
     assert machine.keyboard.read(0) == ord("K")
 
 
-def test_all_three_processes_exiting_immediately_prints_eee_and_halts(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    machine, _ = build_kernel(tmp_path, "LOAD R0, SYS_EXIT\nSYSCALL")
+def test_all_three_processes_exiting_immediately_prints_eee_and_halts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    machine, _ = build_kernel(
+        tmp_path,
+        "LOAD R0, SYS_EXIT\nSYSCALL",
+        init_body=spawn_init_body("main_b", "main_c"),
+    )
 
     run_machine(machine)
 
@@ -332,9 +349,165 @@ def test_all_three_processes_exiting_immediately_prints_eee_and_halts(
     assert machine.cpu.halted is True
 
 
-def test_unknown_kernel_syscall_returns_error_without_output(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_init_alone_exits_and_halts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    machine, _ = build_kernel(
+        tmp_path,
+        "LOAD R0, SYS_EXIT\nSYSCALL",
+        init_body="LOAD R0, SYS_EXIT\nSYSCALL",
+    )
+
+    run_machine(machine)
+
+    assert capsys.readouterr().out == "E"
+    assert machine.cpu.halted is True
+
+
+def test_init_exit_precedes_spawned_process_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    worker = """
+CMPI R0, 0
+JNZ worker_failed
+CMPI R1, 0
+JNZ worker_failed
+CMPI R2, 0
+JNZ worker_failed
+CMPI R3, 0
+JNZ worker_failed
+LOAD R1, 'A'
+JUMP worker_print
+worker_failed:
+LOAD R1, '!'
+worker_print:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    init = """
+LOAD R1, 0x11
+LOAD R2, >main_a
+LOAD R3, <main_a
+LOAD R0, SYS_SPAWN
+SYSCALL
+CMPI R0, 0
+JNZ spawn_failed
+CMPI R1, 0x11
+JNZ spawn_failed
+CMPI R2, >main_a
+JNZ spawn_failed
+CMPI R3, <main_a
+JNZ spawn_failed
+LOAD R0, SYS_EXIT
+SYSCALL
+spawn_failed:
+LOAD R1, '!'
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    machine, _ = build_kernel(tmp_path, worker, init_body=init)
+
+    run_machine(machine)
+
+    assert capsys.readouterr().out == "EAE"
+    assert machine.cpu.halted is True
+
+
+def test_round_robin_with_different_process_counters(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def counter_program(letter: str, count: int, label: str) -> str:
+        return (
+            f"LOAD R1, '{letter}'\nLOAD R2, {count}\n{label}:\n" "LOAD R0, SYS_PRINT_R1\nSYSCALL\nSUBI R2, 1\n" "LOAD R0, SYS_YIELD\nSYSCALL\nCMPI R2, 0\nJNZ " f"{label}\nLOAD R0, SYS_EXIT\nSYSCALL"
+        )
+
+    init = "\n".join(
+        [
+            *spawn_process_lines("main_a"),
+            *spawn_process_lines("main_b"),
+            *spawn_process_lines("main_c"),
+            "LOAD R0, SYS_EXIT",
+            "SYSCALL",
+        ]
+    )
+    machine, _ = build_kernel(
+        tmp_path,
+        counter_program("A", 3, "a_loop"),
+        main_b_body=counter_program("B", 2, "b_loop"),
+        main_c_body=counter_program("C", 1, "c_loop"),
+        init_body=init,
+    )
+
+    run_machine(machine)
+
+    assert capsys.readouterr().out == "EABCABEAEE"
+    assert machine.cpu.halted is True
+
+
+def test_lone_process_can_yield_three_times_then_exit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    init = "\n".join(["LOAD R0, SYS_YIELD", "SYSCALL"] * 3 + ["LOAD R0, SYS_EXIT", "SYSCALL"])
+    machine, _ = build_kernel(
+        tmp_path,
+        "LOAD R0, SYS_EXIT\nSYSCALL",
+        init_body=init,
+    )
+
+    run_machine(machine)
+
+    assert capsys.readouterr().out == "E"
+    assert machine.cpu.halted is True
+
+
+def test_spawn_capacity_reports_each_result_and_halts_after_all_exits(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    init_lines = []
+    for _ in range(14):
+        init_lines.extend(spawn_process_lines("main_a"))
+        init_lines.extend(
+            [
+                "MOV R1, R0",
+                "ADDI R1, 0x30",
+                "LOAD R0, SYS_PRINT_R1",
+                "SYSCALL",
+            ]
+        )
+    init_lines.extend(["LOAD R0, SYS_EXIT", "SYSCALL"])
+    machine, _ = build_kernel(
+        tmp_path,
+        "LOAD R0, SYS_EXIT\nSYSCALL",
+        init_body="\n".join(init_lines),
+    )
+
+    run_machine(machine)
+
+    assert capsys.readouterr().out == "0" * 13 + "SOS1" + "E" * 14
+    assert machine.cpu.halted is True
+
+
+def test_spawn_reuses_dead_process_slot(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    init_lines = [
+        *spawn_process_lines("main_a"),
+        "LOAD R0, SYS_YIELD",
+        "SYSCALL",
+    ]
+    for _ in range(13):
+        init_lines.extend(spawn_process_lines("main_b"))
+    init_lines.extend(["LOAD R0, SYS_EXIT", "SYSCALL"])
+    first_worker = "LOAD R1, 'A'\nLOAD R0, SYS_PRINT_R1\nSYSCALL\nLOAD R0, SYS_EXIT\nSYSCALL"
+    machine, _ = build_kernel(
+        tmp_path,
+        first_worker,
+        main_b_body="LOAD R0, SYS_EXIT\nSYSCALL",
+        init_body="\n".join(init_lines),
+    )
+
+    run_machine(machine)
+
+    assert capsys.readouterr().out == "A" + "E" * 15
+    assert machine.cpu.halted is True
+
+
+def test_unknown_kernel_syscall_returns_error_without_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine, _ = build_kernel(
         tmp_path,
         "LOAD R1, 0x12\nLOAD R2, 0x34\nLOAD R3, 0x56\nLOAD R0, 0x77\nSYSCALL",
@@ -346,9 +519,7 @@ def test_unknown_kernel_syscall_returns_error_without_output(
     assert machine.cpu.regs == [0xEE, 0x12, 0x34, 0x56]
 
 
-def test_hostile_string_pointer_faults_in_kernel_and_halts(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_hostile_string_pointer_faults_in_kernel_and_halts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine, _ = build_kernel(
         tmp_path,
         f"LOAD R1, {CANONICAL_UNMAPPED_ADDRESS >> 8}\n" f"LOAD R2, {CANONICAL_UNMAPPED_ADDRESS & 0xFF}\n" "LOAD R0, SYS_PRINT_STRING\nSYSCALL",
@@ -360,9 +531,7 @@ def test_hostile_string_pointer_faults_in_kernel_and_halts(
     assert machine.cpu.halted is True
 
 
-def test_terminal_pointer_reads_zero_and_prints_nothing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_terminal_pointer_reads_zero_and_prints_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     machine, _ = build_kernel(
         tmp_path,
         f"LOAD R1, {TERMINAL_START >> 8}\nLOAD R2, {TERMINAL_START & 0xFF}\n" "LOAD R0, SYS_PRINT_STRING\nSYSCALL",
@@ -426,7 +595,12 @@ JNZ b_loop
 LOAD R0, SYS_EXIT
 SYSCALL
 """
-    machine, _ = build_kernel(tmp_path, main_a, main_b_body=main_b)
+    machine, _ = build_kernel(
+        tmp_path,
+        main_a,
+        main_b_body=main_b,
+        init_body=spawn_init_body("main_b", "main_c"),
+    )
 
     run_machine(machine)
 
@@ -454,7 +628,11 @@ SYSCALL
 LOAD R0, SYS_EXIT
 SYSCALL
 """
-    machine, _ = build_kernel(tmp_path, main_a)
+    machine, _ = build_kernel(
+        tmp_path,
+        main_a,
+        init_body=spawn_init_body("main_b", "main_c"),
+    )
 
     run_machine(machine)
 
@@ -508,7 +686,12 @@ LOAD R0, SYS_YIELD
 SYSCALL
 RET
 """
-    machine, _ = build_kernel(tmp_path, main_a, main_b_body=main_b)
+    machine, _ = build_kernel(
+        tmp_path,
+        main_a,
+        main_b_body=main_b,
+        init_body=spawn_init_body("main_b", "main_c"),
+    )
 
     run_machine(machine)
 
@@ -559,6 +742,7 @@ SYSCALL
         main_a,
         keyboard_buffer=b"ab",
         main_b_body=main_b,
+        init_body=spawn_init_body("main_b", "main_c"),
     )
 
     for _ in range(2000):
@@ -578,21 +762,74 @@ SYSCALL
     assert machine.cpu.halted is True
 
 
-def test_three_process_counter_program_round_robins_and_halts(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    source_path = Path(__file__).resolve().parents[1] / "asm" / "abba2.asm"
-    image = b"".join(
-        assemble(source_path.read_text(), filename=str(source_path), base_dir=str(source_path.parent))
+def test_three_process_counter_program_round_robins_and_halts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    init_body = """
+LOAD R2, >main_a
+LOAD R3, <main_a
+LOAD R0, SYS_SPAWN
+SYSCALL
+LOAD R2, >main_b
+LOAD R3, <main_b
+LOAD R0, SYS_SPAWN
+SYSCALL
+LOAD R2, >main_c
+LOAD R3, <main_c
+LOAD R0, SYS_SPAWN
+SYSCALL
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    main_a = """
+LOAD R1, 0x41
+LOAD R3, 0x10
+main_a_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+SUBI R3, 1
+LOAD R0, SYS_YIELD
+SYSCALL
+CMPI R3, 0
+JNZ main_a_loop
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    main_b = """
+LOAD R1, 0x42
+LOAD R3, 7
+main_b_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+SUBI R3, 1
+LOAD R0, SYS_YIELD
+SYSCALL
+CMPI R3, 0
+JNZ main_b_loop
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    main_c = """
+LOAD R1, 0x43
+LOAD R3, 4
+main_c_loop:
+LOAD R0, SYS_PRINT_R1
+SYSCALL
+SUBI R3, 1
+LOAD R0, SYS_YIELD
+SYSCALL
+CMPI R3, 0
+JNZ main_c_loop
+LOAD R0, SYS_EXIT
+SYSCALL
+"""
+    machine, _ = build_kernel(
+        tmp_path,
+        main_a,
+        main_b_body=main_b,
+        main_c_body=main_c,
+        init_body=init_body,
     )
-    image_path = tmp_path / "abba2_test.hex"
-    image_path.write_text(image.hex(" "))
-    machine = Machine(str(image_path), handle_machine_faults=True)
 
     run_machine(machine)
 
-    assert capsys.readouterr().out == "ABCABCABCABCABEABABAEAAAAAAAAE"
+    assert capsys.readouterr().out == "EABCABCABCABCABEABABAEAAAAAAAAE"
     assert machine.cpu.halted is True
-
-
-

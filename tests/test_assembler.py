@@ -7,8 +7,9 @@ import assembler as assembler_module
 from assembler import AssemblerError, assemble
 from memmap import TERMINAL_START
 
-def test_printer_source_assembles_with_kernel_vectors_first() -> None:
-    source_path = Path(__file__).resolve().parents[1] / "asm" / "printer.asm"
+
+def test_printer_fixture_assembles_with_kernel_vectors_first() -> None:
+    source_path = Path(__file__).resolve().parent / "fixtures" / "printer.asm"
     program = b"".join(assemble(
         source_path.read_text(), filename=str(source_path), base_dir=str(source_path.parent)
     ))
@@ -169,7 +170,7 @@ def test_include_places_kernel_first_and_exports_its_constants(tmp_path: Path) -
     repository = Path(__file__).resolve().parents[1]
     (tmp_path / "kernel.asm").write_text((repository / "asm" / "kernel.asm").read_text())
     main_path = tmp_path / "main.asm"
-    source = '.include "kernel.asm"\nmain_b:\nHALT\nmain_a:\n' "STORE R0, TERMINAL\nLOAD R0, SYS_READ_CHAR\nmain_c:\nHALT\n"
+    source = '.include "kernel.asm"\ninit:\nJUMP main_a\nmain_b:\nHALT\nmain_a:\n' "STORE R0, TERMINAL\nLOAD R0, SYS_READ_CHAR\nmain_c:\nHALT\n"
 
     program = b"".join(assemble(source, filename=str(main_path), base_dir=str(tmp_path)))
 
